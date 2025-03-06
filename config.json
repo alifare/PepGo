@@ -1,0 +1,85 @@
+{
+	"Model":{
+		"Basic":{
+			"mz_min":-1,
+			"mz_max":-1,
+			"pep_len":100,
+			"_max_charge":-1,
+			"_max_peaks":-1
+		},
+		"Probe":{
+			"_ion_type":{
+				"left":"a:-CHO:1,b:-H:1,c:+NHH:1",
+				"right":"x:+CO&-H:1,y:+H:1,z:-NHH:1"
+			},
+			"ion_type":{
+				"left":"a:-CHO:1,b:-H:1",
+				"right":"y:+H:1"
+			},
+			"_ion_type":{
+				"left":"b:-H:1",
+				"right":"y:+H:1"
+			},
+			"neural_loss":"noloss:-*:1",
+			"_neural_loss":"noloss:-*:1,water:-HHO:1,ammonia:-NHHH:1",
+			"charge":"1:+H:1,2:+HH:2,3:+HHH:3",
+			"charge_num": 10
+		},
+		"Transformer":{
+			"dim_model": 512,
+			"n_head": 8,
+			"dim_feedforward": 1024,
+			"n_layers": 9,
+			"dropout": 0.0,
+			"dim_intensity": null,
+			"max_length": 100,
+			"max_charge": 10,
+			"precursor_mass_tol":  50,
+			"isotope_error_range": [0, 1],
+			"min_peptide_len": 6,
+			"n_beams": 2,
+			"top_match": 1,
+			"n_log": 1,
+			"tb_summarywriter": null,
+			"train_label_smoothing": 0.01,
+			"warmup_iters": 100000,
+			"max_iters": 600000,
+			"out_writer": null,
+			"calculate_precision":true
+		},
+		"Trainer":{
+			"accelerator": "auto",
+			"devices": null,
+			"save_top_k":-1,
+			"learning_rate": 5e-4,
+			"weight_decay": 1e-5,
+			"num_sanity_val_steps":0,
+			"num_workers":1,
+			"epoch":20,
+			"batch_sz":50,
+			"log_every_n_steps":10,
+			"train_batch_size":32,
+			"valid_batch_size":16,
+			"test_batch_size":8
+		}
+	},
+	"MCTTS":{
+		"Tree":{
+			"budget":20,
+			"depth":3,
+			"probe_layers":2,
+			"depth_Transformer":3,
+			"depth_Transformer_beam":2
+		},
+		"Delta":{
+			"_ceiling":13,
+			"ceiling":5,
+			"standard_deviation":0.005,
+			"mode":{
+				"probe_bisect_search":false,
+				"transformer_bisect_search":true,
+				"transformer_beam_search":false
+			}
+		}
+	}
+}
