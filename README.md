@@ -3,4 +3,4 @@ A deep learning and tree search-based model for de novo peptide sequencing (http
 
 This project includes code from [Casanovo] (https://github.com/Noble-Lab/casanovo) licensed under the Apache License, Version 2.0.
 
-Model(N-terminal and C-terminal Transformers) files in .ckpt format can be downloade from https://doi.org/10.5281/zenodo.15031979
+Model(N-terminal and C-terminal Transformers) files in .ckpt format can be downloaded from https://doi.org/10.5281/zenodo.15031979
