@@ -72,8 +72,8 @@
 			"depth_Transformer_beam":2
 		},
 		"Delta":{
-			"_ceiling":13,
-			"ceiling":5,
+			"ceiling":13,
+			"_ceiling":5,
 			"standard_deviation":0.005,
 			"mode":{
 				"probe_bisect_search":false,
