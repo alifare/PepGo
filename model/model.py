@@ -52,7 +52,7 @@ class SpecDataSet(torch.utils.data.Dataset):
     def __len__(self):
         size=len(self.spec_dict)
         return(size)
-    
+
     def _parse_line(self, line):
         line=line.strip()
         m=re.search('^#',line)
@@ -74,7 +74,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         pep['Num_peaks']=int(arr.pop(0))
         pep['ions']=arr.pop(0).split(',')
         return(pep)
-    
+
     def pep_to_sample(self, pep):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         peptide = pep['peptide']
@@ -83,7 +83,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         Mods_num = pep['Mods_num']
         Mods = pep['Mods']
         Num_peaks = pep['Num_peaks']
-            
+
         peptide = re.sub('[IL]', 'X', peptide)
 
         ions=pep['ions']
@@ -98,13 +98,13 @@ class SpecDataSet(torch.utils.data.Dataset):
         y = self.peptide_to_seqarr(peptide, Mods_num, Mods)
 
         s = [float(mw)]
-    
+
         c = [int(charge)]
-       
-        sample = [x,y,s,c] 
+
+        sample = [x,y,s,c]
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(sample)
-    
+
     def peptide_to_seqarr(self, peptide, Mods_num, Mods):
         side_chain = [''] * len(peptide)
         if(Mods_num):
@@ -234,11 +234,11 @@ class MODEL:
         self._utils.parse_var(meta.mass_dict)
         self._utils.parse_var(self._configs)
         '''
-        
+
         #self._Transformer = Transformer(meta=self._meta, configs=self._configs)
         #self._utils.parse_var(self._Transformer)
         #self._mctts = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs)
-        
+
         # Initialized later:
         self.tmp_dir = None
         self.trainer = None
@@ -268,17 +268,17 @@ class MODEL:
             peptides.append(i[1])
             total_mass.append(i[2])
             charge.append(i[3])
-            
+
             #calc_mass = (calc_mass / charge) + self._proton
             mz = (i[2][0] / i[3][0]) + self._proton
 
             precursors.append([i[2][0], i[3][0], mz])
-     
+
         spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
         precursors = torch.tensor(precursors)
- 
+
         batch = [spectra, precursors, peptides]
-         
+
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
 
@@ -306,7 +306,7 @@ class MODEL:
 
         self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
-        
+
         #Training self.Transformer_C
         train_spec_set = SpecDataSet(train_spec, True)
         train_spec_set_loader = torch.utils.data.DataLoader(
@@ -383,10 +383,10 @@ class MODEL:
                 lines_probe.append([spectrum, precursor, peptide])
                 lines_bisect.append([N_memory.detach(), N_mem_mask.detach(), C_memory.detach(), C_mem_mask.detach(), precursor.detach(), peptide, 0, -2])
                 lines_beam.append([N_memory.detach(), N_mem_mask.detach(), C_memory.detach(), C_mem_mask.detach(), precursor.detach(), peptide, 0, -4])
-        
+
             result_probe = [['-','-', False, 0.0, 0.0, 100000.0] for i in range(test_batch_size)]
             result_T_bisect = [['-','-', False, 0.0, 0.0, 100000.0] for i in range(test_batch_size)]
-            result_T_beam = [['-','-', False, 0.0, 0.0, 100000.0] for i in range(test_batch_size)]   
+            result_T_beam = [['-','-', False, 0.0, 0.0, 100000.0] for i in range(test_batch_size)]
 
             if(self._configs['MCTTS']['Delta']['mode']['probe_bisect_search']):
                 with Pool(processes = test_batch_size) as pool:
@@ -402,7 +402,7 @@ class MODEL:
                 with Pool(processes = test_batch_size) as pool:
                     result_T_beam = pool.map(monte.UCTSEARCH_Transformer, lines_beam)
                 monte._depth_Transformer = tmp
-            
+
             for i in range(test_batch_size):
                 precursor = precursors[i:i+1]
                 peptide = peptides[i:i+1]
@@ -424,7 +424,7 @@ class MODEL:
                     mass_error = str(k[5])
                     r = ':'.join([pred_peptide, matched, pred_mass, mass_error])
                     final_results.append(r)
-            
+
                 f_out.write('\t'.join(final_results)+'\n')
 
             end=time.time()
@@ -498,7 +498,7 @@ class MODEL:
 
         models_dir_N = os.path.join(models_dir, 'ckpt_N')
         models_dir_C = os.path.join(models_dir, 'ckpt_C')
- 
+
         model_filename_N = os.path.join(models_dir_N, 'last.ckpt')
         model_filename_C = os.path.join(models_dir_C, 'last.ckpt')
 
@@ -605,11 +605,11 @@ class MODEL:
 
             try:
                 self.Transformer_N = Transformer.load_from_checkpoint(
-                    model_filename_N, map_location=device, **loaded_model_params 
+                    model_filename_N, map_location=device, **loaded_model_params
                 )
 
                 self.Transformer_C = Transformer.load_from_checkpoint(
-                    model_filename_C, map_location=device, **loaded_model_params 
+                    model_filename_C, map_location=device, **loaded_model_params
                 )
 
                 architecture_params = set(model_params.keys()) - set(
