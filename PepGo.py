@@ -7,6 +7,8 @@ import time
 from collections import OrderedDict
 
 from tools.spec import SPEC
+from tools.MGFConverter import MGFConverter
+
 from model.meta import META
 from model.model import MODEL
 
@@ -20,11 +22,16 @@ def main():
                         help='Configure file')
 
     #Converter arguments
+    mgfconverter = subparsers.add_parser("mgfconvert", help="Convert input mgf files to multiple formats")
+    mgfconverter.add_argument("-x", "--xml", type=str, dest='xml',help="XML file along with the mgf file")
+    mgfconverter.add_argument('input', type=str, default=None, help="Name of the mgf file to input")
+
+    #spec arguments
     tospec = subparsers.add_parser("tospec", help="Convert input files to .spec format")
     tospec.add_argument("-t", "--type", type=str, dest='type', choices=['mgf', 'msp', 'mzML'], required=True,
                         help="Input file type: mgf, msp, mzML ...")
     tospec.add_argument('input', type=str, default=None, help="Name of the file to input")
-    specto = subparsers.add_parser("specto", help="Convert .spec file to other formats")
+    #specto = subparsers.add_parser("specto", help="Convert .spec file to other formats")
 
     #Train arguments
     train = subparsers.add_parser('train', help='Training Transformer models')
@@ -47,6 +54,18 @@ def main():
     configs = read_configs(args.config)
     meta = META(configs)
     model = MODEL(meta, configs)
+    if(args.command == 'mgfconvert'):
+        mgf_converter = MGFConverter(meta)
+        mgf_converter.index_mgf(args.input, args.xml)
+        mgf_converter.extract_ptms(args.input)
+        mgf_converter.convert_MassiveMGF_to_spec(args.input, args.input+'.mass_ptm.xls')
+        '''
+        mgf_converter.convert_mgf_to_spec(args.input)
+        mgf_converter.convert_mgf_to_Casanovo(args.input)
+        mgf_converter.convert_mgf_to_Pointnovo(args.input)
+        mgf_converter.convert_mgf_to_PrimeNovo(args.input)
+        mgf_converter.convert_mgf_to_InstaNovo(args.input)
+        '''
 
     if(args.command == "tospec"):
         spec=SPEC(meta)

@@ -80,13 +80,13 @@ class SPEC:
                 total_peptide_num+=1
                 name=line.replace("Name:",'')
                 name=name.strip()
-                m=re.search('(.+)/(\d+)$',name)
+                m=re.search(r'(.+)/(\d+)$',name)
 
                 if(m):
                     peptide=m.group(1)
                     charge=m.group(2)
-                    d=re.findall('n*\[(\d+)\]',peptide)
-                    (peptide,subn)=re.subn('n*\[(\d+)\]','',peptide)
+                    d=re.findall(r'n*\[(\d+)\]',peptide)
+                    (peptide,subn)=re.subn(r'n*\[(\d+)\]','',peptide)
                     f_out.write('\n'+name+'\t'+peptide)
                     spec_id=prefix+':'+peptide+':'+str(id_n)
                     id_n+=1
@@ -96,7 +96,7 @@ class SPEC:
                     sys.exit('Name format error! ( Name:<peptide sequence>/<charge> )')
             else:
                 if(flag==1):
-                    m=re.search('^MW:\s*(\d+(\.\d+)?)$',line)
+                    m=re.search(r'^MW:\s*(\d+(\.\d+)?)$',line)
                     if(m):
                         mw=m.group(1)
                         f_out.write('\t'+str(mw)+'\t'+str(charge))
@@ -105,13 +105,13 @@ class SPEC:
                 elif(flag==2):
                     comment=line
 
-                    m=re.search('\s+iRT=(\S+)$', comment)
+                    m=re.search(r'\s+iRT=(\S+)$', comment)
                     if(m):
                         iRT = m.group(1)
                         f_out.write('\t'+str(iRT))
                     else:
                         sys.exit('iRT missing')
-                    m=re.search('\s+Mods=(\d+)(/(\S+))?\s', comment)
+                    m=re.search(r'\s+Mods=(\d+)(/(\S+))?\s', comment)
 
                     if(m):
                         Mods_num = int(m.group(1))
@@ -125,7 +125,7 @@ class SPEC:
 
                     f_out.write('\t'+collision+'\t'+spec_id)
                 elif(flag==3):
-                    m=re.search('^Num peaks:\s+(\d+)$', line)
+                    m=re.search(r'^Num peaks:\s+(\d+)$', line)
                     if(m):
                         num_peaks=int(m.group(1))
                         f_out.write('\t'+str(num_peaks))

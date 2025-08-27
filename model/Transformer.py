@@ -12,13 +12,15 @@ import logging
 logger = logging.getLogger('PepGo')
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from depthcharge.components import PeptideDecoder
+#from depthcharge.components import PeptideDecoder
+from depthcharge.transformers import AnalyteTransformerDecoder
+
 from casanovo.denovo.model import Spec2Pep
 from casanovo.data import ms_io
 
 from .utils import UTILS
 
-class MyPeptideDecoder(PeptideDecoder):
+class MyPeptideDecoder(AnalyteTransformerDecoder):
     def __init__(
             self,
             dim_model,
@@ -41,7 +43,7 @@ class MyPeptideDecoder(PeptideDecoder):
             residues=residues,
             max_charge=max_charge,
         )
-        
+
         self._utils = UTILS()
 
     def generate_tgt_mask(self, sz):
@@ -64,7 +66,7 @@ class MyPeptideDecoder(PeptideDecoder):
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(tokens)
-    
+
     def tokenize_residue(self, residue):
         token = self._aa2idx[residue]
         return(token)
@@ -85,7 +87,7 @@ class MyPeptideDecoder(PeptideDecoder):
         masses = self.mass_encoder(precursors[:, None, 0])
         charges = self.charge_encoder(precursors[:, 1].int() - 1)
         precursors = masses + charges[:, None, :]
-       
+
         if(peptides is None):
             tgt = precursors
         else:
@@ -181,7 +183,7 @@ class Transformer(Spec2Pep):
 
         #self._utils.parse_var(self.peptide_mass_calculator.masses.items())
         #self._utils.parse_var(residues)
-        
+
         #Function parameters() from torch.nn.Module returns an iterator over module parameters.
         #This is typically passed to an optimizer.
 
@@ -250,15 +252,15 @@ class Transformer(Spec2Pep):
         peptides_pred = self.beam_pred(spectra, precursors)
 
         outputs=[peptides_pred, peptides]
-        
+
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(outputs)
 
     def beam_pred(self, spectra, precursors):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
-        #precursors = torch.tensor(precursors)       
-        
+        #precursors = torch.tensor(precursors)
+
         peptides_pred = []
         for spectrum_preds in self.forward(spectra, precursors):
             if(not spectrum_preds):
@@ -278,7 +280,7 @@ class Transformer(Spec2Pep):
 
         for i in range(len(peptides)):
             print(str(predictions[i])+'\n'+','.join(peptides[i])+'\n')
- 
+
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
 
     def evaluate(self, peptides_true, peptides_pred):
@@ -299,12 +301,12 @@ class Transformer(Spec2Pep):
             for j in range(min(pep_true_aa_len, pep_pred_aa_len)):
                 if(pep_true_aa[j]==pep_pred_aa[j]):
                     aa_match+=1
-            pep_match = 0 
+            pep_match = 0
             if(pep_true==pep_pred):
                 pep_match=1
 
             pep_eval_arr.append([pep_true_aa_len, pep_pred_aa_len, aa_match, pep_match])
-        
+
         total_pep_num = len(pep_eval_arr)
         evaluations = [0 for _ in range(len(pep_eval_arr[0]))]
         for i in range(total_pep_num):
@@ -314,7 +316,7 @@ class Transformer(Spec2Pep):
         aa_precision = evaluations[2]/(evaluations[1] + 1e-8)
         aa_recall = evaluations[2]/(evaluations[0] + 1e-8)
         pep_precision = evaluations[3]/(total_pep_num + 1e-8)
-        
+
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return([aa_precision, aa_recall, pep_precision])
 
@@ -394,7 +396,7 @@ class Transformer(Spec2Pep):
             dim0 = torch.arange(tokens.shape[0])
             final_pos = torch.full((ends_stop_token.shape[0],), step)
             final_pos[ends_stop_token] = step - 1
-            
+
             # Multiple N-terminal modifications.
             multiple_mods = torch.isin(
                 tokens[dim0, final_pos], n_term
@@ -422,7 +424,7 @@ class Transformer(Spec2Pep):
             #self._utils.parse_var(peptide_len)
             peptide = self.decoder.detokenize(pred_tokens)
             #self._utils.parse_var(peptide)
-            
+
             # Omit stop token.
             if self.decoder.reverse and peptide[0] == "$":
                 peptide = peptide[1:]
@@ -466,7 +468,7 @@ class Transformer(Spec2Pep):
                             self.isotope_error_range[1] + 1,
                         )
                     ]
-                
+
                     # Terminate the beam if the calculated m/z for the predicted
                     # peptide (without potential additional AAs with negative
                     # mass) is within the precursor m/z tolerance.
@@ -518,7 +520,7 @@ class Transformer(Spec2Pep):
         #self._utils.parse_var(peptide_score, 'B')
 
         return(aa_scores, peptide_score)
-    
+
     def calculate_peptide_mass(self, seq, charge=None):
         calc_mass = sum([self._mass_dict[aa] for aa in seq])
         return calc_mass
