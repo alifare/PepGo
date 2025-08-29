@@ -24,7 +24,9 @@ def main():
     #Converter arguments
     mgfconverter = subparsers.add_parser("mgfconvert", help="Convert input mgf files to multiple formats")
     mgfconverter.add_argument("-x", "--xml", type=str, dest='xml',help="XML file along with the mgf file")
-    mgfconverter.add_argument('input', type=str, default=None, help="Name of the mgf file to input")
+    mgfconverter.add_argument('input', type=str, default=None, help="Name of the input mgf file")
+    mgfconverter.add_argument('-c', '--spec', type=str, dest='spec', default=None, help="Name of the output spec file")
+    mgfconverter.add_argument('-p', '--ptm', type=str, dest='ptm', default=None, help="Name of the mass-ptm table")
 
     #spec arguments
     tospec = subparsers.add_parser("tospec", help="Convert input files to .spec format")
@@ -57,8 +59,10 @@ def main():
     if(args.command == 'mgfconvert'):
         mgf_converter = MGFConverter(meta)
         mgf_converter.index_mgf(args.input, args.xml)
-        mgf_converter.extract_ptms(args.input)
-        mgf_converter.convert_MassiveMGF_to_spec(args.input, args.input+'.mass_ptm.xls')
+        mgf_converter.extract_ptms(args.input, 'tmp.ptm')
+        mgf_converter.readin_mass_ptm_dicts(args.ptm)
+        mgf_converter.convert_MassiveMGF_to_spec(args.input)
+
         '''
         mgf_converter.convert_mgf_to_spec(args.input)
         mgf_converter.convert_mgf_to_Casanovo(args.input)

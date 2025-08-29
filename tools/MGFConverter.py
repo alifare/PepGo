@@ -6,6 +6,7 @@ import xmltodict
 import json
 
 from pyteomics import mgf
+from pyteomics.mgf import MGF
 
 class MGFConverter(object):
     def __init__(self, meta):
@@ -14,30 +15,8 @@ class MGFConverter(object):
         self.pattern = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern2 = r'([A-Z<>][+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern3 = r'[+-]\d+(?:\.\d+)?'
-
-    def capture_mods_in_digits(self, seq=None):
-        seq='<'+seq+'>'
-        mods = re.findall(self.pattern, seq)
-        result = [(name, [x for x in re.findall(r'[+-]\d+(?:\.\d+)?', nums)]) for name, nums in mods]
-        return(result)
-
-    def split_with_regex(self, ptms, seq):
-        seq='<'+seq+'>'
-        tokens = [t for t in re.split(self.pattern2, seq) if t.strip()]
-        tokenized_seq=[]
-        for t in tokens:
-            m = re.match(self.pattern, t)
-            if(m):
-                name = m.group(1)
-                nums = re.findall(self.pattern3, m.group(2))
-                mods = [ptms[n] for n in nums]
-                mods.insert(0,name)
-                token = '+'.join(mods)
-                tokenized_seq.append(token)
-            else:
-                tokenized_seq += list(t)
-        tokenized_seq = ','.join(tokenized_seq)
-        return(tokenized_seq)
+        self._mass_to_ptm = None
+        self._ptm_to_mass = None
 
     def index_mgf(self, mgf_file, xml_file=None):
         json_file = mgf_file.replace('.mgf', '-mgf-byte-offsets.json')
@@ -50,11 +29,30 @@ class MGFConverter(object):
                 read_schema=False  # 不解析额外字段，提速
             )
             lib.write_byte_offsets()
-            '''
-            # 随机访问 scan=12345
-            spec = lib[12345]
-            print(spec['params'])
-            '''
+
+    def capture_mods_in_digits(self, seq=None):
+        seq='<'+seq+'>'
+        mods = re.findall(self.pattern, seq)
+        result = [(name, [x for x in re.findall(r'[+-]\d+(?:\.\d+)?', nums)]) for name, nums in mods]
+        return(result)
+
+    def split_with_regex(self, seq):
+        seq='<'+seq+'>'
+        tokens = [t for t in re.split(self.pattern2, seq) if t.strip()]
+        tokenized_seq=[]
+        for t in tokens:
+            m = re.match(self.pattern, t)
+            if(m):
+                name = m.group(1)
+                nums = re.findall(self.pattern3, m.group(2))
+                mods = [self._mass_to_ptm[n] for n in nums]
+                mods.insert(0,name)
+                token = '+'.join(mods)
+                tokenized_seq.append(token)
+            else:
+                tokenized_seq += list(t)
+        tokenized_seq = ','.join(tokenized_seq)
+        return(tokenized_seq)
 
     def extract_ptms(self, mgf_file, ptm_file=None):
         ptms=dict()
@@ -73,29 +71,53 @@ class MGFConverter(object):
                 f_out.write(k+'\n')
             f_out.close()
 
-    def convert_MassiveMGF_to_spec(self, mgf_file, mass_ptm_file=None):
-        ptms=dict()
-        if(mass_ptm_file):
-            f_in=open(mass_ptm_file, 'r')
-            for line in f_in:
-                line=line.strip()
-                if(not line.startswith('#')):
-                    arr=line.split('\t')
-                    ptms[arr[0]]=arr[1]
-            f_in.close()
-        #pp.pprint(ptms)
+    def readin_mass_ptm_dicts(self, mass_ptm_file):
+        mass_to_ptm=dict()
+        ptm_to_mass=dict()
+        f_in=open(mass_ptm_file, 'r')
+        for line in f_in:
+            line=line.strip()
+            if(not line.startswith('#')):
+                arr=line.split('\t')
+                mass_to_ptm[arr[0]]=arr[1]
+                ptm_to_mass[arr[1]]=arr[0]
+        f_in.close()
+        self._mass_to_ptm=mass_to_ptm
+        self._ptm_to_mass=ptm_to_mass
 
-        for spectrum in mgf.read(mgf_file):
-            params = spectrum['params']        # 标题
-            seq = spectrum['params']['seq']
-            charge = spectrum['params']['charge']
+        return(mass_to_ptm, ptm_to_mass)
 
-            mz = spectrum['m/z array']                 # numpy.ndarray
-            it = spectrum['intensity array']           # numpy.ndarray
-            tokenized_seq = self.split_with_regex(ptms, seq)
-            print(seq)
-            print(tokenized_seq)
-            print('=' * 100)
+    def convert_MassiveMGF_to_spec(self, mgf_file, spec_file=None):
+        if(not spec_file):
+            spec_file=mgf_file+'.spec'
+
+        f_out=open(spec_file, 'w')
+        f_out.write('#Scan\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
+
+        with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
+            for spectrum in reader:
+                scan = spectrum['params']['scan']
+                charge = int(spectrum['params']['charge'][0])
+
+                pepmass = spectrum['params']['pepmass'][0]
+                precursor_mass = pepmass * charge - self.meta.proton * charge
+
+                seq = spectrum['params']['seq']
+                tokenized_seq = self.split_with_regex(seq)
+
+                mz_array = spectrum['m/z array']                 # numpy.ndarray
+                it_array = spectrum['intensity array']           # numpy.ndarray
+
+                if(len(mz_array)!=len(it_array)):
+                    sys.exit('Length of mz array and intensity array mismatch')
+
+                peaks=[]
+                for mz, it in zip(mz_array, it_array):
+                    peaks.append(str(mz)+':'+str(it))
+                peaks=','.join(peaks)
+                output_line = [scan, tokenized_seq, str(precursor_mass), str(charge), '-', peaks]
+                f_out.write('\t'.join(output_line) + '\n')
+        f_out.close()
 
     def convert_mgf_to_spec(self, input_file, output_file=None):
         if(output_file is None):
