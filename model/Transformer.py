@@ -32,16 +32,16 @@ class MyPeptideDecoder(AnalyteTransformerDecoder):
             residues,
             max_charge
         ):
-
+        n_tokens=len(residues)
         super().__init__(
-            dim_model=dim_model,
-            n_head=n_head,
+            n_tokens=n_tokens,
+            d_model=dim_model,
+            nhead=n_head,
             dim_feedforward=dim_feedforward,
             n_layers=n_layers,
             dropout=dropout,
-            reverse=reverse,
-            residues=residues,
-            max_charge=max_charge,
+            positional_encoder=True,
+            padding_int=0,
         )
 
         self._utils = UTILS()
@@ -116,6 +116,7 @@ class Transformer(Spec2Pep):
         n_layers: int = 9,
         dropout: float = 0.0,
         dim_intensity: Optional[int] = None,
+        max_peptide_len: int = 100,
         max_length: int = 100,
         residues: Union[Dict[str, float], str] = "canonical",
         max_charge: int = 5,
@@ -134,6 +135,7 @@ class Transformer(Spec2Pep):
         max_iters: int = 600_000,
         out_writer: Optional[ms_io.MztabWriter] = None,
         calculate_precision: bool = False,
+        tokenizer=None,
         meta = None,
         **kwargs: Dict,
     ):
@@ -149,8 +151,7 @@ class Transformer(Spec2Pep):
             dim_feedforward,
             n_layers,
             dropout,
-            dim_intensity,
-            max_length,
+            max_peptide_len,
             residues,
             max_charge,
             precursor_mass_tol,
@@ -159,12 +160,12 @@ class Transformer(Spec2Pep):
             n_beams,
             top_match,
             n_log,
-            tb_summarywriter,
             train_label_smoothing,
             warmup_iters,
-            max_iters,
+            cosine_schedule_period_iters,
             out_writer,
             calculate_precision,
+            tokenizer,
             **kwargs,
         )
 

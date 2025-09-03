@@ -38,8 +38,8 @@ def main():
     #Train arguments
     train = subparsers.add_parser('train', help='Training Transformer models')
     #train.add_argument('input', type=str, default=None, help="Name of the spec file for training")
-    train.add_argument('-T', '--Transformers', type=str, dest='Transformers',default=None,
-                        help="Directory to save two Transformer models(.ckpt)")
+    train.add_argument('-T', '--Transformers', type=str, dest='Transformers',default='ckpt',
+                        help="Directory to save two Transformer models(./ckpt)")
     train.add_argument('-t', '--train', type=str, dest='train',default=None, help="Spec file for training")
     train.add_argument('-v', '--valid', type=str, dest='valid',default=None, help="Spec file for validation")
     
@@ -50,8 +50,8 @@ def main():
     predict.add_argument('input', type=str, default=None, help="Name of the spec file for prediction")
 
     args = parser.parse_args()
-    print('args:')
-    pp.pprint(args)
+    #print('args:')
+    #pp.pprint(args)
 
     configs = read_configs(args.config)
     meta = META(configs)
@@ -61,7 +61,9 @@ def main():
         mgf_converter.index_mgf(args.input, args.xml)
         mgf_converter.extract_ptms(args.input, 'tmp.ptm')
         mgf_converter.readin_mass_ptm_dicts(args.ptm)
-        mgf_converter.convert_MassiveMGF_to_spec(args.input)
+        #spec_file=mgf_converter.convert_MassiveMGF_to_spec(args.input)
+        spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
+        mgf_converter.convert_spec_to_h5(spec_file, dryrun=False)
 
         '''
         mgf_converter.convert_mgf_to_spec(args.input)
@@ -89,7 +91,8 @@ def main():
         print('Total_time_consumed in prediction:',end=':')
         print(end-start)
     else:
-        pass    
+
+        pass
 
 def read_configs(config_file):
     with open(config_file, 'r') as f:

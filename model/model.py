@@ -55,9 +55,11 @@ class SpecDataSet(torch.utils.data.Dataset):
         m=re.search('^#',line)
         if(m or line==''):
             return(False)
-
+        #print(line)
         pep=dict()
         arr=line.split('\t')
+        print(arr)
+        pep['scan']=arr[0]
         pep['peptide']=arr.pop(0)
         pep['Naa']=len(pep['peptide'])
         pep['charge']=int(arr.pop(0))

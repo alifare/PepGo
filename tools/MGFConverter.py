@@ -1,6 +1,9 @@
 import os
 import re
 import pprint as pp
+from .HDF import HDF
+import numpy as np
+import h5py, hdf5plugin
 
 import xmltodict
 import json
@@ -87,9 +90,12 @@ class MGFConverter(object):
 
         return(mass_to_ptm, ptm_to_mass)
 
-    def convert_MassiveMGF_to_spec(self, mgf_file, spec_file=None):
+    def convert_MassiveMGF_to_spec(self, mgf_file, spec_file=None, dryrun=False):
         if(not spec_file):
             spec_file=mgf_file+'.spec'
+        if(dryrun):
+            return(spec_file)
+
 
         f_out=open(spec_file, 'w')
         f_out.write('#Scan\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
@@ -118,6 +124,55 @@ class MGFConverter(object):
                 output_line = [scan, tokenized_seq, str(precursor_mass), str(charge), '-', peaks]
                 f_out.write('\t'.join(output_line) + '\n')
         f_out.close()
+
+        return(spec_file)
+
+    def initial_h5(self, hdf_file, mode):
+        h5 = None
+        if(mode=='w'):
+            h5 = h5py.File(hdf_file,'w')
+        elif(mode=='r'):
+            h5 = h5py.File(hdf_file,'r')
+        elif(mode=='a'):
+            h5 = h5py.File(hdf_file,'a')
+        else:
+            raise ValueError('Invalid mode')
+        return(h5)
+
+    def convert_spec_to_h5(self, spec_file: str, dataset: str='default', chunk_size=1000, dryrun=False):
+        hdf_file=spec_file+'.h5'
+        if(dryrun):
+            return(hdf_file)
+
+        h5 = self.initial_h5(hdf_file, mode='w')
+        dset = h5.require_dataset(name=dataset, shape=(0,), maxshape=(None,), dtype=h5py.string_dtype(encoding='utf-8'))
+        buffer = []
+        f_in=None
+        if (spec_file.endswith('.gz')):
+            f_in = gzip.open(spec_file, 'rt')
+        else:
+            f_in = open(spec_file, 'r')
+
+        for line in f_in:
+            spectrum = line.strip()
+            buffer.append(spectrum)
+
+            if len(buffer) >= chunk_size:
+                spectra = np.array(buffer)
+                new_shape = (dset.shape[0] + spectra.shape[0],)
+                dset.resize(new_shape)
+                dset[-spectra.shape[0]:] = spectra
+                buffer = []  # Clear the buffer
+
+        if (buffer):
+            spectra = np.array(buffer)
+            new_shape = (dset.shape[0] + spectra.shape[0],)
+            dset.resize(new_shape)
+            dset[-spectra.shape[0]:] = spectra
+
+        f_in.close()
+
+        return(hdf_file)
 
     def convert_mgf_to_spec(self, input_file, output_file=None):
         if(output_file is None):
