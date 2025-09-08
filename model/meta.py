@@ -68,6 +68,29 @@ class META:
         pp.pprint(self._modifications)
         print('-'*100)
         '''
+    @property
+    def configs(self):
+        return(self._configs)
+
+    @property
+    def min_mz(self):
+        return(self._configs['Model']['Basic']['min_mz'])
+
+    @property
+    def max_mz(self):
+        return(self._configs['Model']['Basic']['max_mz'])
+
+    @property
+    def max_peaks(self):
+        return self._configs['Model']['Basic']['max_peaks']
+
+    @property
+    def min_charges(self):
+        return self._configs['Model']['Basic']['min_charges']
+
+    @property
+    def max_charges(self):
+        return self._configs['Model']['Basic']['max_charges']
 
     @property
     def elements(self):

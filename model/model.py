@@ -25,6 +25,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from .Transformer import Transformer
 from .MCTTS import Monte_Carlo_Double_Root_Tree
 from .utils import UTILS
+from .HDF import HDF
+import pprint as pp
 
 class SpecDataSet(torch.utils.data.Dataset):
     def __init__(self, spec_file, reverse=False):
@@ -42,7 +44,19 @@ class SpecDataSet(torch.utils.data.Dataset):
             sample = self.pep_to_sample(pep)
             self.spec_dict.append(sample)
 
+        print(len(self.spec_dict))
+        pp.pprint(self.spec_dict[0])
+        print('-' * 100)
+        print(self.spec_dict[0])
+        print('-' * 100)
+        '''
+        for i in self.spec_dict:
+            print(i)
+            print('-'*100)
+        '''
     def __getitem__(self, idx):
+        print('type(idx):')
+        print(type(idx))
         spec=self.spec_dict[idx]
         return(spec)
 
@@ -56,22 +70,20 @@ class SpecDataSet(torch.utils.data.Dataset):
         if(m or line==''):
             return(False)
         #print(line)
-        pep=dict()
-        arr=line.split('\t')
-        print(arr)
-        pep['scan']=arr[0]
-        pep['peptide']=arr.pop(0)
-        pep['Naa']=len(pep['peptide'])
-        pep['charge']=int(arr.pop(0))
-        pep['mw']=float(arr.pop(0))
-        pep['Mods_num']=int(arr.pop(0))
-        pep['Mods']=arr.pop(0)
-        pep['iRT']=arr.pop(0)
-        Collision=arr.pop(0)
-        spec_id=arr.pop(0)
-        pep['spec_id']=spec_id
-        pep['Num_peaks']=int(arr.pop(0))
-        pep['ions']=arr.pop(0).split(',')
+        pep = dict()
+        arr = line.split('\t')
+        pep['peptide'] = arr.pop(0)
+        pep['Naa'] = len(pep['peptide'])
+        pep['charge'] = int(arr.pop(0))
+        pep['mw'] = float(arr.pop(0))
+        pep['Mods_num'] = int(arr.pop(0))
+        pep['Mods'] = arr.pop(0)
+        pep['iRT'] = arr.pop(0)
+        Collision = arr.pop(0)
+        spec_id = arr.pop(0)
+        pep['spec_id'] = spec_id
+        pep['Num_peaks'] = int(arr.pop(0))
+        pep['ions'] = arr.pop(0).split(',')
         return(pep)
 
     def pep_to_sample(self, pep):
@@ -95,7 +107,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         x = [ [float(j) for j in i.split(':')] for i in ions ]
 
         y = self.peptide_to_seqarr(peptide, Mods_num, Mods)
-
+        print(y)
         s = [float(mw)]
 
         c = [int(charge)]
@@ -246,6 +258,21 @@ class MODEL:
         self.writer = None
 
 
+        '''
+        self._max_peaks = self.meta.max_peaks
+        self._min_charges = self.meta.min_charges
+        self._max_charges = self.meta.max_charges
+        self._min_mz = self.meta.min_mz
+        self._max_mz = self.meta.max_mz
+
+        print(self._max_peaks)
+        print(self._min_charges)
+        print(self._max_charges)
+        print(self._min_mz)
+        print(self._max_mz)
+        '''
+
+
     def spec_collate(self, item):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         spectra = []
@@ -286,7 +313,10 @@ class MODEL:
         print(valid_spec)
 
         #Training self.Transformer_N
-        train_spec_set = SpecDataSet(train_spec, False)
+        #train_spec_set = SpecDataSet(train_spec, False)
+        train_spec_set = HDF(train_spec)
+
+        '''
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -295,7 +325,8 @@ class MODEL:
             shuffle=True,
         )
 
-        valid_spec_set = SpecDataSet(valid_spec, False)
+        #valid_spec_set = SpecDataSet(valid_spec, False)
+        valid_spec_set = H5Dataset(valid_spec, self._meta)
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
@@ -307,7 +338,8 @@ class MODEL:
         del train_spec_set, valid_spec_set
 
         #Training self.Transformer_C
-        train_spec_set = SpecDataSet(train_spec, True)
+        #train_spec_set = SpecDataSet(train_spec, True)
+        train_spec_set = H5Dataset(train_spec, True)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -316,7 +348,8 @@ class MODEL:
             shuffle=True,
         )
 
-        valid_spec_set = SpecDataSet(valid_spec, True)
+        #valid_spec_set = SpecDataSet(valid_spec, True)
+        valid_spec_set = H5Dataset(valid_spec, True)
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
@@ -326,6 +359,7 @@ class MODEL:
 
         self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
+        '''
 
     def predict(self, spec_file=None):
         mp.set_start_method('spawn', force=True)

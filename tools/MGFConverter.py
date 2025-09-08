@@ -1,7 +1,6 @@
 import os
 import re
 import pprint as pp
-from .HDF import HDF
 import numpy as np
 import h5py, hdf5plugin
 
@@ -155,6 +154,9 @@ class MGFConverter(object):
 
         for line in f_in:
             spectrum = line.strip()
+            m = re.search('^#', spectrum)
+            if (m or spectrum == ''):
+                continue
             buffer.append(spectrum)
 
             if len(buffer) >= chunk_size:

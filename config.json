@@ -1,11 +1,12 @@
 {
 	"Model":{
 		"Basic":{
-			"mz_min":-1,
-			"mz_max":-1,
+			"min_mz":50,
+			"max_mz":2500,
 			"pep_len":100,
-			"_max_charge":-1,
-			"_max_peaks":-1
+			"min_charges":1,
+			"max_charges":10,
+			"max_peaks":300
 		},
 		"Probe":{
 			"_ion_type":{
