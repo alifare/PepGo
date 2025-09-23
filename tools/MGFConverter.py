@@ -13,12 +13,13 @@ from pyteomics.mgf import MGF
 class MGFConverter(object):
     def __init__(self, meta):
         super().__init__()
-        self.meta = meta
+        self._meta = meta
         self.pattern = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern2 = r'([A-Z<>][+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern3 = r'[+-]\d+(?:\.\d+)?'
         self._mass_to_ptm = None
         self._ptm_to_mass = None
+        self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Data']['replace_isoleucine_with_leucine']
 
     def index_mgf(self, mgf_file, xml_file=None):
         json_file = mgf_file.replace('.mgf', '-mgf-byte-offsets.json')
@@ -35,7 +36,8 @@ class MGFConverter(object):
     def capture_mods_in_digits(self, seq=None):
         seq='<'+seq+'>'
         mods = re.findall(self.pattern, seq)
-        result = [(name, [x for x in re.findall(r'[+-]\d+(?:\.\d+)?', nums)]) for name, nums in mods]
+        result = [(name, [x for x in re.findall(self.pattern3, nums)]) for name, nums in mods]
+
         return(result)
 
     def split_with_regex(self, seq):
@@ -46,13 +48,23 @@ class MGFConverter(object):
             m = re.match(self.pattern, t)
             if(m):
                 name = m.group(1)
+                if(self._replace_isoleucine_with_leucine and (name=='I' or name=='L') ):
+                    name='X'
                 nums = re.findall(self.pattern3, m.group(2))
                 mods = [self._mass_to_ptm[n] for n in nums]
                 mods.insert(0,name)
                 token = '+'.join(mods)
                 tokenized_seq.append(token)
             else:
-                tokenized_seq += list(t)
+                if(self._replace_isoleucine_with_leucine):
+                    tokenized_seq += list(t.replace('I', 'X').replace('L', 'X'))
+                else:
+                    tokenized_seq += list(t)
+
+        tokenized_seq[0] = re.sub(r'^<[-+]', '', tokenized_seq[0])
+        if(tokenized_seq[-1]=='>'):
+            tokenized_seq = tokenized_seq[:-1]
+
         tokenized_seq = ','.join(tokenized_seq)
         return(tokenized_seq)
 
@@ -61,11 +73,12 @@ class MGFConverter(object):
         for spectrum in mgf.read(mgf_file):
             seq = spectrum['params']['seq']
             mods=self.capture_mods_in_digits(seq)
+
             for name, nums in mods:
-                for ptm in nums:
-                    if ptm not in ptms:
-                        ptms[ptm]=1
-                    ptms[ptm]+=+1
+                name_and_ptm = name+'\t'+'\t'.join(nums)
+                if(name_and_ptm not in ptms):
+                    ptms[name_and_ptm]=1
+                ptms[name_and_ptm]+=1
 
         if(ptm_file):
             f_out=open(ptm_file, 'w')
@@ -95,7 +108,6 @@ class MGFConverter(object):
         if(dryrun):
             return(spec_file)
 
-
         f_out=open(spec_file, 'w')
         f_out.write('#Scan\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
 
@@ -105,7 +117,7 @@ class MGFConverter(object):
                 charge = int(spectrum['params']['charge'][0])
 
                 pepmass = spectrum['params']['pepmass'][0]
-                precursor_mass = pepmass * charge - self.meta.proton * charge
+                precursor_mass = pepmass * charge - self._meta.proton * charge
 
                 seq = spectrum['params']['seq']
                 tokenized_seq = self.split_with_regex(seq)
@@ -197,7 +209,7 @@ class MGFConverter(object):
                 charge = params['charge']
                 charge = int(charge[0])
 
-                precursor_mass = pepmass * charge - self.meta.proton * charge
+                precursor_mass = pepmass * charge - self._meta.proton * charge
 
                 mz = spectrum['m/z array']
                 mz = mz.astype(str)

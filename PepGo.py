@@ -58,12 +58,15 @@ def main():
     model = MODEL(meta, configs)
     if(args.command == 'mgfconvert'):
         mgf_converter = MGFConverter(meta)
-        mgf_converter.index_mgf(args.input, args.xml)
+        #mgf_converter.index_mgf(args.input, args.xml)
+
         mgf_converter.extract_ptms(args.input, 'tmp.ptm')
         mgf_converter.readin_mass_ptm_dicts(args.ptm)
-        #spec_file=mgf_converter.convert_MassiveMGF_to_spec(args.input)
-        spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
-        mgf_converter.convert_spec_to_h5(spec_file, dryrun=False)
+
+        #spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
+        spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input)
+        #mgf_converter.convert_spec_to_h5(spec_file, dryrun=False)
+        mgf_converter.convert_spec_to_h5(spec_file)
 
         '''
         mgf_converter.convert_mgf_to_spec(args.input)
@@ -81,7 +84,8 @@ def main():
             spec.convert_msp_to_spec(args.input)
     elif(args.command == "train"):
         model.initialize_model(mode='train', models_dir=args.Transformers)
-        model.train(train_spec=args.train, valid_spec=args.valid)
+        ext = os.path.splitext(args.train)[1]
+        model.train(train_spec=args.train, valid_spec=args.valid, mode=ext)
     elif(args.command == "predict"):
         start=time.time()
         #model.initialize_trainer(train=False)

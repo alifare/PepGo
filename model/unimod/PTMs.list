@@ -5,3 +5,26 @@ C	Carbamidomethyl	fixed
 
 #Methionine
 M	Oxidation	variable
+
+#Massive KB
+N-term	Gln->pyro-Glu	variable
+N-term	TMT6plex	variable
+N-term	TMT6plex+Acetyl	variable
+N-term	TMT6plex+Carbamyl	variable
+N-term	TMT6plex+Gln->pyro-Glu	variable
+N-term	Dimethyl	variable
+N-term	Dimethyl:2H(4)13C(2)	variable
+N-term	Dimethyl:2H(4)13C(2)+Gln->pyro-Glu	variable
+N-term	Acetyl	variable
+N-term	Carbamyl	variable
+K	GG	variable
+K	TMT6plex	variable
+K	Dimethyl	variable
+K	Dimethyl:2H(4)13C(2)	variable
+K	Label:13C(6)15N(2)	variable
+N	Deamidated	variable
+Q	Deamidated	variable
+R	Label:13C(6)15N(4)	variable
+S	Phospho	variable
+T	Phospho	variable
+Y	Phospho	variable

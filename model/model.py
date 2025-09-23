@@ -26,8 +26,10 @@ from .Transformer import Transformer
 from .MCTTS import Monte_Carlo_Double_Root_Tree
 from .utils import UTILS
 from .HDF import HDF
+#from PepGo.tools.MGFConverter import MGFConverter
 import pprint as pp
 
+'''
 class SpecDataSet(torch.utils.data.Dataset):
     def __init__(self, spec_file, reverse=False):
         super().__init__()
@@ -44,19 +46,7 @@ class SpecDataSet(torch.utils.data.Dataset):
             sample = self.pep_to_sample(pep)
             self.spec_dict.append(sample)
 
-        print(len(self.spec_dict))
-        pp.pprint(self.spec_dict[0])
-        print('-' * 100)
-        print(self.spec_dict[0])
-        print('-' * 100)
-        '''
-        for i in self.spec_dict:
-            print(i)
-            print('-'*100)
-        '''
     def __getitem__(self, idx):
-        print('type(idx):')
-        print(type(idx))
         spec=self.spec_dict[idx]
         return(spec)
 
@@ -69,7 +59,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         m=re.search('^#',line)
         if(m or line==''):
             return(False)
-        #print(line)
+
         pep = dict()
         arr = line.split('\t')
         pep['peptide'] = arr.pop(0)
@@ -107,7 +97,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         x = [ [float(j) for j in i.split(':')] for i in ions ]
 
         y = self.peptide_to_seqarr(peptide, Mods_num, Mods)
-        print(y)
+
         s = [float(mw)]
 
         c = [int(charge)]
@@ -228,7 +218,7 @@ class SpecDataSet(torch.utils.data.Dataset):
         offset_dict, lines_num = self.read_pickle(spec_file)
         lines=self.random_read_lines(spec_file, offset_dict, [3,10])
         print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-
+'''
 
 class MODEL:
     def __init__(self, meta, configs):
@@ -237,6 +227,8 @@ class MODEL:
         self._proton = self._meta.proton
         self._configs = configs
         self._utils = UTILS()
+
+        #self._mgfconverter = MGFConverter(meta)
 
         '''
         self._utils.parse_var(meta.tokens)
@@ -271,7 +263,6 @@ class MODEL:
         print(self._min_mz)
         print(self._max_mz)
         '''
-
 
     def spec_collate(self, item):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
@@ -308,15 +299,24 @@ class MODEL:
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
 
-    def train(self, train_spec=None, valid_spec=None):
+    def train(self, train_spec=None, valid_spec=None, mode=None):
+        print('Train set',end=':')
         print(train_spec)
+        print('Valid set',end=':')
         print(valid_spec)
 
         #Training self.Transformer_N
-        #train_spec_set = SpecDataSet(train_spec, False)
-        train_spec_set = HDF(train_spec)
+        print(mode + ' mode:')
 
-        '''
+        if(mode=='.spec'):
+            train_spec_set = SpecDataSet(train_spec, False)
+            valid_spec_set = SpecDataSet(valid_spec, False)
+        elif(mode=='.h5'):
+            train_spec_set = HDF(train_spec)
+            valid_spec_set = HDF(valid_spec)
+        else:
+            sys.exit('mode must be .spec or .h5')
+
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -324,22 +324,41 @@ class MODEL:
             collate_fn=self.spec_collate,
             shuffle=True,
         )
+        '''
+        '''
 
-        #valid_spec_set = SpecDataSet(valid_spec, False)
-        valid_spec_set = H5Dataset(valid_spec, self._meta)
+        for batch in train_spec_set_loader:
+            outputs = self.Transformer_N(batch)
+            #pp.pprint(outputs)
+            #print('-'*100)
+            break
+
+        '''
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
             num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate
         )
+        '''
 
-        self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
+        #self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
+
         del train_spec_set, valid_spec_set
 
+        '''
         #Training self.Transformer_C
-        #train_spec_set = SpecDataSet(train_spec, True)
-        train_spec_set = H5Dataset(train_spec, True)
+        print(mode + ' mode:')
+        
+        if(mode=='.spec'):
+            train_spec_set = SpecDataSet(train_spec, reverse=True)
+            valid_spec_set = SpecDataSet(valid_spec, reverse=True)
+        elif(mode=='.h5'):
+            train_spec_set = HDF(train_spec, reverse=True)
+            valid_spec_set = HDF(valid_spec, reverse=True)
+        else:
+            sys.exit('mode must be .spec or .h5')
+
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -348,8 +367,6 @@ class MODEL:
             shuffle=True,
         )
 
-        #valid_spec_set = SpecDataSet(valid_spec, True)
-        valid_spec_set = H5Dataset(valid_spec, True)
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
@@ -526,6 +543,13 @@ class MODEL:
         self.trainer_N = pl.Trainer(**trainer_cfg_N)
         self.trainer_C = pl.Trainer(**trainer_cfg_C)
 
+    def initialize_tokenizer(self) -> None:
+        self.tokenizer = tokenizer_clss(
+            residues=self.config.residues,
+            reverse=self.config.reverse_peptides,
+            start_token=None,
+            stop_token="$",
+        )
     def initialize_model(self, mode=None, models_dir=None) -> None:
         models_dir = os.path.normpath(models_dir)
 

@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import itertools
 import pprint as pp
@@ -213,6 +214,31 @@ class META:
 
         return(elements, residues, modifications)
 
+    def _build_token(self,tokens, ptms, fixed=False):
+        remove_residues = set()
+
+        for ptm in ptms:
+            residues = ptms[ptm]
+            ptm_mass = sum([self._modifications[p][0] for p in ptm.split('+')])
+
+            for p in ptm.split('+'):
+                if(p not in self._modifications):
+                    sys.exit('Error: The ptm '+p+' is not in unimod modifications, please check!')
+
+            for r in residues:
+                if(r in {'<', 'N-term', '>', 'C-term'}):        # 用集合 O(1) 平均时间复杂度
+                    t = ptm
+                    m = ptm_mass
+                else:
+                    t = r+'+'+ptm
+                    m = tokens[r] + ptm_mass
+
+                tokens[t]=m
+                if(fixed):
+                    remove_residues.add(r)
+
+        return(remove_residues)
+
     def _make_tokens(self):
         tokens = dict()
         special_tokens = dict()
@@ -226,39 +252,22 @@ class META:
         tokens['X'] = special_tokens['I']
 
         special_tokens['-'] = self._residues.pop('-') #pad token, aka nothing
-        #special_tokens['*'] = special_tokens['-'] #alias of pad token
-        special_tokens['N-term'] = self._residues.pop('N-term') #start token, aka H
-        special_tokens['<'] = special_tokens['N-term']
-        special_tokens['C-term'] = self._residues.pop('C-term') #endtoken, aka OH
-        special_tokens['>'] = special_tokens['C-term']
 
         while self._residues:
             key, value = self._residues.popitem()
             tokens[key] = value
-      
-        variable_ptms = self._ptm_dict['variable']
-        fixed_ptms = self._ptm_dict['fixed']
-        
-        for p in variable_ptms:
-            if(p not in self._modifications):
-                sys.exit('Error: The ptm '+p+' is not in unimod modifications, please check!')
-            for r in variable_ptms[p]:
-                if(r not in self._modifications[p][1]):
-                    sys.exit("Error: The residue "+r+" is not in "+p+ "'s sites, please check!")
-            tokens[r+'+'+p] = tokens[r]+self._modifications[p][0]
-        
-        remove_residues = set()
-        for p in fixed_ptms:
-            if(p not in self._modifications):
-                sys.exit('Error: The ptm '+p+' is not in unimod modifications, please check!')
-            for r in fixed_ptms[p]:
-                if(r not in self._modifications[p][1]):
-                    sys.exit("Error: The residue "+r+" is not in "+p+ "'s sites, please check!")
-            tokens[r+'+'+p] = tokens[r]+self._modifications[p][0]
-            remove_residues.add(r)
 
-        [tokens.pop(r) for r in remove_residues]
-        
+        variable_ptms = self._ptm_dict['variable']
+        self._build_token(tokens, variable_ptms)
+
+        fixed_ptms = self._ptm_dict['fixed']
+        remove_residues = self._build_token(tokens, fixed_ptms, True)
+
+        for r in remove_residues.union({'<', 'N-term', '>', 'C-term'}):
+            t=tokens.pop(r, None)
+            if(t != None):
+                special_tokens[r]=t
+
         if(set(tokens.keys()) & set(special_tokens.keys())):
             sys.exit("tokens and special_tokens should not have common keys!")
 
@@ -277,8 +286,6 @@ class META:
 
     def _make_residue_combination_pool(self):
         residue_mass_values = list(self._tokens.values())
-        #print('self._tokens:')
-        #pp.pprint(self._tokens)
 
         #Probes
         probe_layers = int(self._configs['MCTTS']['Tree']['probe_layers'])

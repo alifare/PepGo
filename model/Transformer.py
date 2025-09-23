@@ -3,6 +3,8 @@ import sys
 import numpy as np
 import pprint as pp
 import torch
+from torch import nn
+from pygments.lexers.ruby import FancyLexer
 from torch.utils.tensorboard import SummaryWriter
 
 import einops
@@ -12,59 +14,251 @@ import logging
 logger = logging.getLogger('PepGo')
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-#from depthcharge.components import PeptideDecoder
-from depthcharge.transformers import AnalyteTransformerDecoder
 
-from casanovo.denovo.model import Spec2Pep
-from casanovo.data import ms_io
+from collections.abc import Callable
+from depthcharge.encoders import FloatEncoder, PeakEncoder, PositionalEncoder
+from depthcharge.tokenizers import Tokenizer
+
+from depthcharge.transformers import (
+    AnalyteTransformerDecoder,
+    SpectrumTransformerEncoder,
+)
+
+#from depthcharge.tokenizers import PeptideTokenizer
+import depthcharge
+
+import lightning.pytorch as pl
 
 from .utils import UTILS
 
-class MyPeptideDecoder(AnalyteTransformerDecoder):
+class SpectrumEncoder(SpectrumTransformerEncoder):
     def __init__(
-            self,
-            dim_model,
-            n_head,
-            dim_feedforward,
-            n_layers,
-            dropout,
-            reverse,
-            residues,
-            max_charge
-        ):
-        n_tokens=len(residues)
+        self,
+        d_model: int = 128,
+        n_head: int = 8,
+        dim_feedforward: int = 1024,
+        n_layers: int = 1,
+        dropout: float = 0,
+        peak_encoder: PeakEncoder | Callable | bool = True,
+    ):
+        """Initialize a SpectrumEncoder."""
+        super().__init__(d_model, n_head, dim_feedforward, n_layers, dropout, peak_encoder)
+
+        self.latent_spectrum = torch.nn.Parameter(torch.randn(1, 1, d_model))
+
+    def global_token_hook(
+        self,
+        mz_array: torch.Tensor,
+        intensity_array: torch.Tensor,
+        *args: torch.Tensor,
+        **kwargs: dict,
+    ) -> torch.Tensor:
+
+        return(self.latent_spectrum.squeeze(0).expand(mz_array.shape[0], -1))
+
+class PeptideTokenizer(depthcharge.tokenizers.PeptideTokenizer):
+    residues = {}
+
+    #@abstractmethod
+    def split(self, sequence: str) -> list[str]:
+        return(sequence.split(','))
+
+    def tokenize(
+        self,
+        sequences: list,
+        add_start: bool = False,
+        add_stop: bool = False,
+        to_strings: bool = False,
+    ) -> torch.Tensor | list[list[str]]:
+        """Tokenize the input sequences.
+
+        Parameters
+        ----------
+        sequences : Iterable[str] or str
+            The sequences to tokenize.
+        add_start : bool, optional
+            Prepend the start token to the beginning of the sequence.
+        add_stop : bool, optional
+            Append the stop token to the end of the sequence.
+        to_strings : bool, optional
+            Return each as a list of token strings rather than a
+            tensor. This is useful for debugging.
+
+        Returns
+        -------
+        torch.tensor of shape (n_sequences, max_length) or list[list[str]]
+            Either a tensor containing the integer values for each
+            token, padded with 0's, or the list of tokens comprising
+            each sequence.
+
+        """
+        add_start = add_start and self.start_token is not None
+        add_stop = add_stop and self.stop_token is not None
+        try:
+            out = []
+            for seq in sequences:
+                tokens = seq
+                if add_start and tokens[0] != self.start_token:
+                    tokens.insert(0, self.start_token)
+
+                if add_stop and tokens[-1] != self.stop_token:
+                    tokens.append(self.stop_token)
+
+                if to_strings:
+                    out.append(tokens)
+                    continue
+
+                out.append(torch.tensor([self.index[t] for t in tokens]))
+
+            if to_strings:
+                return out
+
+            return nn.utils.rnn.pad_sequence(out, batch_first=True)
+        except KeyError as err:
+            raise ValueError("Unrecognized token") from err
+
+    def detokenize(
+        self,
+        tokens: torch.Tensor,
+        join: bool = True,
+        trim_start_token: bool = True,
+        trim_stop_token: bool = True,
+    ) -> list[str] | list[list[str]]:
+        """Retreive sequences from tokens.
+
+        Parameters
+        ----------
+        tokens : torch.Tensor of shape (n_sequences, max_length)
+            The zero-padded tensor of integerized tokens to decode.
+        join : bool, optional
+            Join tokens into strings?
+        trim_start_token : bool, optional
+            Remove the start token from the beginning of a sequence.
+        trim_stop_token : bool, optional
+            Remove the stop token and anything following it from the sequence.
+
+        Returns
+        -------
+        list[str] or list[list[str]]
+            The decoded sequences each as a string or list or strings.
+
+        """
+        decoded = []
+        for row in tokens:
+            seq = []
+            for idx in row:
+                if self.reverse_index[idx] is None:
+                    continue
+
+                if trim_stop_token and idx == self.stop_int:
+                    break
+
+                seq.append(self.reverse_index[idx])
+
+            if trim_start_token and seq[0] == self.start_token:
+                seq.pop(0)
+
+            if join:
+                seq = ",".join(seq)
+
+            decoded.append(seq)
+
+        return decoded
+
+
+class PeptideDecoder(AnalyteTransformerDecoder):
+    def __init__(
+        self,
+        n_tokens: int | Tokenizer,
+        d_model: int = 128,
+        n_head: int = 8,
+        dim_feedforward: int = 1024,
+        n_layers: int = 1,
+        dropout: float = 0,
+        positional_encoder: PositionalEncoder | bool = True,
+        padding_int: int | None = None,
+        max_charge: int = 4,
+    ) -> None:
+        """Initialize a PeptideDecoder."""
+
         super().__init__(
             n_tokens=n_tokens,
-            d_model=dim_model,
+            d_model=d_model,
             nhead=n_head,
             dim_feedforward=dim_feedforward,
             n_layers=n_layers,
             dropout=dropout,
-            positional_encoder=True,
-            padding_int=0,
+            positional_encoder=positional_encoder,
+            padding_int=padding_int,
         )
 
+        self.charge_encoder = torch.nn.Embedding(max_charge, d_model)
+        self.mass_encoder = FloatEncoder(d_model)
         self._utils = UTILS()
+
+        # Override the output layer to have +1 in the second dimension
+        # compared to the AnalyteTransformerDecoder to account for
+        # padding as a possible class (=0) and avoid problems during
+        # beam search decoding.
+        self.final = torch.nn.Linear(
+            d_model, self.token_encoder.num_embeddings
+        )
+
+    def global_token_hook(
+        self,
+        tokens: torch.Tensor,
+        precursors: torch.Tensor,
+        **kwargs: dict,
+    ) -> torch.Tensor:
+        """
+        Override global_token_hook to include precursor information.
+
+        Parameters
+        ----------
+        *args :
+        tokens : list of str, torch.Tensor, or None
+            The partial molecular sequences for which to predict the
+            next token. Optionally, these may be the token indices
+            instead of a string.
+        precursors : torch.Tensor
+            Precursor information.
+        *args : torch.Tensor
+            Additional data passed with the batch.
+        **kwargs : dict
+            Additional data passed with the batch.
+
+        Returns
+        -------
+        torch.Tensor of shape (batch_size, d_model)
+            The global token representations.
+        """
+        masses = self.mass_encoder(precursors[:, None, 0]).squeeze(1)
+        charges = self.charge_encoder(precursors[:, 1].int() - 1)
+        precursors = masses + charges
+        return precursors
+
 
     def generate_tgt_mask(self, sz):
         return ~torch.triu(torch.ones(sz, sz, dtype=torch.bool)).transpose(0, 1)
 
     def myTokenize(self, sequence, partial=False):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
 
+        self._utils.parse_var(sequence)
         if not isinstance(sequence[0], str):
             return sequence  # Assume it is already tokenized.
 
-        if self.reverse:
-            sequence = list(reversed(sequence))
+        #if self.reverse:
+        #    sequence = list(reversed(sequence))
 
         if not partial:
             sequence += ["$"]
 
-        tokens = [self._aa2idx[aa] for aa in sequence]
+        #tokens = [self._aa2idx[aa] for aa in sequence]
+        tokens = [self.index[aa] for aa in sequence]
         tokens = torch.tensor(tokens, device=self.device)
 
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(tokens)
 
     def tokenize_residue(self, residue):
@@ -108,7 +302,8 @@ class MyPeptideDecoder(AnalyteTransformerDecoder):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return self.final(preds), tokens
 
-class Transformer(Spec2Pep):
+
+class Transformer(pl.LightningModule):
     def __init__(self,
         dim_model: int = 512,
         n_head: int = 8,
@@ -133,54 +328,86 @@ class Transformer(Spec2Pep):
         warmup_iters: int = 100_000,
         cosine_schedule_period_iters: int = 600_000,
         max_iters: int = 600_000,
-        out_writer: Optional[ms_io.MztabWriter] = None,
+        #out_writer: Optional[ms_io.MztabWriter] = None,
+        out_writer = None,
         calculate_precision: bool = False,
         tokenizer=None,
         meta = None,
         **kwargs: Dict,
     ):
-
+        super().__init__()
         self._meta = meta
         self._proton = self._meta.proton
         self._mass_dict = self._meta.mass_dict
-        #residues = self._meta.tokens
+        self._utils = UTILS()
+        self.save_hyperparameters()
 
-        super().__init__(
-            dim_model,
-            n_head,
-            dim_feedforward,
-            n_layers,
-            dropout,
-            max_peptide_len,
-            residues,
-            max_charge,
-            precursor_mass_tol,
-            isotope_error_range,
-            min_peptide_len,
-            n_beams,
-            top_match,
-            n_log,
-            train_label_smoothing,
-            warmup_iters,
-            cosine_schedule_period_iters,
-            out_writer,
-            calculate_precision,
-            tokenizer,
-            **kwargs,
-        )
+        '''
+        print('self._meta.tokens',end=':')
+        print(len(self._meta.tokens))
+        pp.pprint(self._meta.tokens)
+        '''
 
-        self.decoder = MyPeptideDecoder(
-            dim_model=dim_model,
+        self.tokenizer = tokenizer or PeptideTokenizer(residues=self._meta.tokens, start_token=None, stop_token="$")
+        self.vocab_size = len(self.tokenizer) + 1
+
+        #print('self.vocab_size', self.vocab_size)
+        '''
+        print('self.tokenizer.index',end=':')
+        print(len(self.tokenizer.index))
+        pp.pprint(dict(self.tokenizer.index))
+        print('-'*100)
+        '''
+
+        '''
+        print('self.tokenizer.reverse_index',end=':')
+        print(len(self.tokenizer.reverse_index))
+        print(type(self.tokenizer.reverse_index))
+        for i in range(len(self.tokenizer.reverse_index)):
+            print(i, self.tokenizer.reverse_index[i])
+        print('-'*100)
+        '''
+
+
+        '''
+        # 方法1: difference() 方法
+        diff1 = set(self.tokenizer.reverse_index).difference(set(self.tokenizer.index))
+        diff2 = set(self.tokenizer.index).difference(set(self.tokenizer.reverse_index))
+        print('diff1-2',end=':')  # 输出: {1, 2, 3}
+        print(len(diff1),len(diff2))
+        print(diff1,diff2)
+        '''
+
+
+        '''
+        print('PeptideDecoder',end=':')
+        self._utils.parse_class(PeptideTokenizer)
+        print('-'*100)
+        '''
+
+
+        '''
+        print('-'*100)
+        print('self.tokenizer:')
+        self._utils.parse_instance(self.tokenizer)
+        '''
+
+        self.encoder = SpectrumEncoder(
+            d_model=dim_model,
             n_head=n_head,
             dim_feedforward=dim_feedforward,
             n_layers=n_layers,
             dropout=dropout,
-            reverse=False,
-            residues=residues,
-            max_charge=max_charge
         )
 
-        self._utils = UTILS()
+        self.decoder = PeptideDecoder(
+            n_tokens=self.tokenizer,
+            d_model=dim_model,
+            n_head=n_head,
+            dim_feedforward=dim_feedforward,
+            n_layers=n_layers,
+            dropout=dropout,
+        )
 
         #self._utils.parse_var(self.peptide_mass_calculator.masses.items())
         #self._utils.parse_var(residues)
@@ -193,6 +420,31 @@ class Transformer(Spec2Pep):
         #for param in self.parameters():
             #print(type(param), param.size())
             #print(param, type(param), param.size())
+
+    '''
+    #def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
+    def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
+        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' started ' + '+' * 100)
+        #self._utils.parse_var(batch)
+        mzs, intensities, precursors, seqs = self._process_batch(batch)
+        #print(seqs)
+
+        print('\nmzs:')
+        print(mzs.shape)
+        pp.pprint(mzs)
+
+        print('\nintensities:')
+        print(intensities.shape)
+        pp.pprint(intensities)
+
+
+        print('\nseqs:')
+        #print(seqs.shape)
+        pp.pprint(seqs)
+        sys.exit()
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        return(True)
+
 
     def _get_top_peptide(
         self,
@@ -614,126 +866,175 @@ class Transformer(Spec2Pep):
                     torch.clone(pred_peptide),
                 ),
             )
+'''
 
-    '''
-    def my_get_topk_beams(
-        self,
-        tokens: torch.tensor,
-        scores: torch.tensor,
-        finished_beams: torch.tensor,
-        batch: int,
-        step: int,
-    ) -> Tuple[torch.tensor, torch.tensor]:
+###---------------------------------------------NEW-----------------------------------------------------------
+    def _process_batch(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        spectra, precursors, peptides = batch
+        mzs = spectra[:,:,0]
+        intensities = spectra[:,:,1]
+
+        print(peptides)
+        #tokens = self.tokenizer.tokenize(peptides)
+        tokens = self.tokenizer.tokenize(peptides, add_stop=True)
+
+        return(mzs, intensities, precursors, tokens)
+
+    def forward(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> List[List[Tuple[float, np.ndarray, str]]]:
         """
-        Find the top-k beams with the highest scores and continue decoding
-        those.
-
-        Stop decoding for beams that have been finished.
+        Predict peptide sequences for a batch of MS/MS spectra.
 
         Parameters
         ----------
-        tokens : torch.Tensor of shape (n_spectra * n_beams, max_length)
-            Predicted amino acid tokens for all beams and all spectra.
-         scores : torch.Tensor of shape
-         (n_spectra *  n_beams, max_length, n_amino_acids)
-            Scores for the predicted amino acid tokens for all beams and all
-            spectra.
-        finished_beams : torch.Tensor of shape (n_spectra * n_beams)
-            Boolean tensor indicating whether the current beams are ready for
-            caching.
-        batch: int
-            Number of spectra in the batch.
-        step : int
-            Index of the next decoding step.
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
 
         Returns
         -------
-        tokens : torch.Tensor of shape (n_spectra * n_beams, max_length)
-            Predicted amino acid tokens for all beams and all spectra.
-         scores : torch.Tensor of shape
-         (n_spectra *  n_beams, max_length, n_amino_acids)
-            Scores for the predicted amino acid tokens for all beams and all
-            spectra.
+        pred_peptides : List[List[Tuple[float, np.ndarray, str]]]
+            For each spectrum, a list with the top peptide predictions.
+            A peptide prediction consists of a tuple with the peptide
+            score, the amino acid scores, and the predicted peptide
+            sequence.
         """
-        #self._utils.parse_var(finished_beams)
+        mzs, ints, precursors, tokens = self._process_batch(batch)
 
-        beam = self.n_beams  # S
-        vocab = self.decoder.vocab_size + 1  # V
+        print('\nmzs',end=':')
+        print(mzs.shape)
+        pp.pprint(mzs)
 
-        # Reshape to group by spectrum (B for "batch").
-        tokens = einops.rearrange(tokens, "(B S) L -> B L S", S=beam)
-        scores = einops.rearrange(scores, "(B S) L V -> B L V S", S=beam)
+        print('\nints:')
+        print(ints.shape)
+        pp.pprint(ints)
 
-        #self._utils.parse_var(step)
-        #self._utils.parse_var(tokens)
-        #self._utils.parse_var(tokens[:, :step, :], 'tokens[:, :step, :]')
-        #self._utils.parse_var(scores[:, :step, :, :], 'scores[:, :step, :, :]')
+        print('\nprecursors:')
+        print(precursors.shape)
+        pp.pprint(precursors)
 
-        # Get the previous tokens and scores.
-        prev_tokens = einops.repeat(
-            tokens[:, :step, :], "B L S -> B L V S", V=vocab
+        print('\ntokens:')
+        print(tokens.shape)
+        pp.pprint(tokens)
+
+        #return self.beam_search_decode(mzs, ints, precursors)
+
+
+    def _forward_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        The forward learning step.
+
+        Parameters
+        ----------
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
+
+        Returns
+        -------
+        scores : torch.Tensor of shape (n_spectra, length, n_amino_acids)
+            The individual amino acid scores for each prediction.
+        tokens : torch.Tensor of shape (n_spectra, length)
+            The predicted tokens for each spectrum.
+        """
+        mzs, ints, precursors, tokens = self._process_batch(batch)
+
+        print('\nmzs',end=':')
+        print(mzs.shape)
+        pp.pprint(mzs)
+
+        print('\nints:')
+        print(ints.shape)
+        pp.pprint(ints)
+
+        print('\nprecursors:')
+        print(precursors.shape)
+        pp.pprint(precursors)
+
+        print('\ntokens:')
+        print(tokens.shape)
+        pp.pprint(tokens)
+
+
+        memories, mem_masks = self.encoder(mzs, ints)
+        scores = self.decoder(
+            tokens=tokens,
+            memory=memories,
+            memory_key_padding_mask=mem_masks,
+            precursors=precursors,
         )
-        prev_scores = torch.gather(
-            scores[:, :step, :, :], dim=2, index=prev_tokens
+        return scores, tokens
+
+    def training_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        *args,
+        mode: str = "train",
+    ) -> torch.Tensor:
+        """
+        A single training step.
+
+        Parameters
+        ----------
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
+        mode : str
+            Logging key to describe the current stage.
+
+        Returns
+        -------
+        torch.Tensor
+            The loss of the training step.
+        """
+        pred, truth = self._forward_step(batch)
+        pred = pred[:, :-1, :].reshape(-1, self.vocab_size)
+
+        if mode == "train":
+            loss = self.celoss(pred, truth.flatten())
+        else:
+            loss = self.val_celoss(pred, truth.flatten())
+        self.log(
+            f"{mode}_CELoss",
+            loss.detach(),
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=pred.shape[0],
         )
-        prev_scores = einops.repeat(
-            prev_scores[:, :, 0, :], "B L S -> B L (V S)", V=vocab
+        return loss
+
+    def on_train_start(self):
+        """Log optimizer settings."""
+        self.log("hp/optimizer_warmup_iters", self.warmup_iters)
+        self.log(
+            "hp/optimizer_cosine_schedule_period_iters",
+            self.cosine_schedule_period_iters,
         )
-        #self._utils.parse_var(prev_tokens)
-        #self._utils.parse_var(prev_scores)
 
-        # Get the scores for all possible beams at this step.
-        step_scores = torch.zeros(batch, step + 1, beam * vocab).type_as(
-            scores
-        )
-
-        #self._utils.parse_var(step_scores, 'A')
-        step_scores[:, :step, :] = prev_scores
-        #self._utils.parse_var(step_scores, 'B')
-        step_scores[:, step, :] = einops.rearrange(
-            scores[:, step, :, :], "B V S -> B (V S)"
-        )
-        #self._utils.parse_var(step_scores, 'C')
-
-
-        # Find all still active beams by masking out terminated beams.
-        active_mask = (
-            ~finished_beams.reshape(batch, beam).repeat(1, vocab)
-        ).float()
-        #self._utils.parse_var(active_mask, 'A')
-        #self._utils.parse_var(torch.sum(active_mask), 'torch.sum(active_mask) A')
-
-        # Mask out the index '0', i.e. padding token, by default.
-        # FIXME: Set this to a very small, yet non-zero value, to only
-        # get padding after stop token.
-        active_mask[:, :beam] = 1e-8
-        #self._utils.parse_var(active_mask, 'B')
-        #self._utils.parse_var(torch.sum(active_mask), 'torch.sum(active_mask) B')
-
-        # Figure out the top K decodings.
-        #self._utils.parse_var(step_scores.nanmean(dim=1), 'step_scores.nanmean(dim=1)')
-        _, top_idx = torch.topk(step_scores.nanmean(dim=1) * active_mask, beam)
-        #self._utils.parse_var(top_idx)
-        v_idx, s_idx = np.unravel_index(top_idx.cpu(), (vocab, beam))
-        s_idx = einops.rearrange(s_idx, "B S -> (B S)")
-        b_idx = einops.repeat(torch.arange(batch), "B -> (B S)", S=beam)
-
-        #self._utils.parse_var(prev_tokens)
-        # Record the top K decodings.
-        tokens[:, :step, :] = einops.rearrange(
-            prev_tokens[b_idx, :, 0, s_idx], "(B S) L -> B L S", S=beam
-        )
-        #self._utils.parse_var(tokens[:3, :step+1, :], '<-->v A')
-        tokens[:, step, :] = torch.tensor(v_idx)
-        #self._utils.parse_var(tokens[:3, :step+1, :], '<-->v B')
-
-        #self._utils.parse_var(scores, '__A')
-        scores[:, : step + 1, :, :] = einops.rearrange(
-            scores[b_idx, : step + 1, :, s_idx], "(B S) L V -> B L V S", S=beam
-        )
-        #self._utils.parse_var(scores, '__B')
-
-        scores = einops.rearrange(scores, "B L V S -> (B S) L V")
-        tokens = einops.rearrange(tokens, "B L S -> (B S) L")
-        return tokens, scores
-    '''
+    def on_train_epoch_end(self) -> None:
+        """
+        Log the training loss at the end of each epoch.
+        """
+        if "train_CELoss" in self.trainer.callback_metrics:
+            train_loss = (
+                self.trainer.callback_metrics["train_CELoss"].detach().item()
+            )
+        else:
+            train_loss = np.nan
+        metrics = {"step": self.trainer.global_step, "train": train_loss}
+        self._history.append(metrics)
+        self._log_history()

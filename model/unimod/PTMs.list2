@@ -1,0 +1,20 @@
+#residue	ptm	type
+
+#Cysteine
+C	Carbamidomethyl	fixed
+
+#Methionine
+M	Oxidation	variable
+
+#Massive KB
+<	TMT6plex	variable
+<	Acetyl	variable
+S	Phospho	variable
+<	Carbamyl	variable
+N	Deamidation	variable
+<	Gln->pyro-Glu	variable
+<	Dimethyl	variable
+<	Dimethyl:2H(4)13C(2)	variable
+K	GG	variable
+R	Label:13C(6)15N(4)	variable
+K	Label:13C(6)15N(2)	variable

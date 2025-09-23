@@ -1,0 +1,7 @@
+#residue	ptm	type
+
+#Cysteine
+C	Carbamidomethyl	fixed
+
+#Methionine
+M	Oxidation	variable
