@@ -1,9 +1,10 @@
 #The development began around 2019-02-21
 import os
-import re
 import sys
 
 import time
+from datetime import datetime
+
 import pathlib
 import pandas as pd
 import warnings
@@ -11,7 +12,6 @@ import numpy as np
 np.set_printoptions(suppress=True)
 
 from tqdm import tqdm
-from collections import OrderedDict
 from typing import Union
 
 import torch
@@ -20,205 +20,14 @@ from torch.multiprocessing import Process, Manager, Pool
 
 import lightning.pytorch as pl
 from lightning.pytorch.strategies import DDPStrategy
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+
 
 from .Transformer import Transformer
 from .MCTTS import Monte_Carlo_Double_Root_Tree
 from .utils import UTILS
 from .HDF import HDF
-#from PepGo.tools.MGFConverter import MGFConverter
 import pprint as pp
-
-'''
-class SpecDataSet(torch.utils.data.Dataset):
-    def __init__(self, spec_file, reverse=False):
-        super().__init__()
-        self.spec_file = spec_file
-        self.reverse = reverse
-
-        self._max_peak_num = 300
-        spec_offset_dict, lines_num = self.read_pickle(spec_file)
-        lines=self.read_lines(spec_file, spec_offset_dict)
-
-        self.spec_dict = []
-        for i in lines:
-            pep = self._parse_line(i)
-            sample = self.pep_to_sample(pep)
-            self.spec_dict.append(sample)
-
-    def __getitem__(self, idx):
-        spec=self.spec_dict[idx]
-        return(spec)
-
-    def __len__(self):
-        size=len(self.spec_dict)
-        return(size)
-
-    def _parse_line(self, line):
-        line=line.strip()
-        m=re.search('^#',line)
-        if(m or line==''):
-            return(False)
-
-        pep = dict()
-        arr = line.split('\t')
-        pep['peptide'] = arr.pop(0)
-        pep['Naa'] = len(pep['peptide'])
-        pep['charge'] = int(arr.pop(0))
-        pep['mw'] = float(arr.pop(0))
-        pep['Mods_num'] = int(arr.pop(0))
-        pep['Mods'] = arr.pop(0)
-        pep['iRT'] = arr.pop(0)
-        Collision = arr.pop(0)
-        spec_id = arr.pop(0)
-        pep['spec_id'] = spec_id
-        pep['Num_peaks'] = int(arr.pop(0))
-        pep['ions'] = arr.pop(0).split(',')
-        return(pep)
-
-    def pep_to_sample(self, pep):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        peptide = pep['peptide']
-        charge = pep['charge']
-        mw = pep['mw']
-        Mods_num = pep['Mods_num']
-        Mods = pep['Mods']
-        Num_peaks = pep['Num_peaks']
-
-        peptide = re.sub('[IL]', 'X', peptide)
-
-        ions=pep['ions']
-        spec_id=pep['spec_id']
-
-        peak_num = len(ions)
-        if(self._max_peak_num < peak_num):
-            self._max_peak_num = peak_num
-
-        x = [ [float(j) for j in i.split(':')] for i in ions ]
-
-        y = self.peptide_to_seqarr(peptide, Mods_num, Mods)
-
-        s = [float(mw)]
-
-        c = [int(charge)]
-
-        sample = [x,y,s,c]
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return(sample)
-
-    def peptide_to_seqarr(self, peptide, Mods_num, Mods):
-        side_chain = [''] * len(peptide)
-        if(Mods_num):
-            for mod in Mods.split('/'):
-                (pos, residue, ptm) = mod.split(',')
-                pos = int(pos)
-                side_chain[pos] = ptm
-
-        seqarr = []
-        for i,r in enumerate(peptide):
-            ptm=side_chain[i]
-            if(ptm):
-                r = r+'+'+ptm
-            seqarr.append(r)
-            #residue_matrix[i, 0]=self.convert_residue_to_onehot(r)
-
-        if(self.reverse):
-            seqarr = seqarr[::-1]
-
-        return(seqarr)
-
-    def peptide_to_seqarr_startend(self, peptide, Mods_num, Mods):
-        peptide = self._start + peptide + self._end
-
-        side_chain = [''] * len(peptide)
-        if(Mods_num):
-            for mod in Mods.split('/'):
-                (pos, residue, ptm) = mod.split(',')
-                pos = int(pos)+1 #Very important, because the start token has been added to the head of the peptide!
-                side_chain[pos] = ptm
-
-        seqarr = []
-        for i,r in enumerate(peptide):
-            ptm=side_chain[i]
-            if(ptm):
-                r = r+'+'+ptm
-            seqarr.append(r)
-            #residue_matrix[i, 0]=self.convert_residue_to_onehot(r)
-
-        if(self.reverse):
-            seqarr = seqarr[::-1]
-
-        return(seqarr)
-
-    @classmethod
-    def _iter_count(sel, spec_file):
-        from itertools import (takewhile, repeat)
-        buffer = 1024 * 1024
-        with open(spec_file) as f:
-            buf_gen = takewhile(lambda x: x, (f.read(buffer) for _ in repeat(None)))
-            return(sum(buf.count('\n') for buf in buf_gen))
-
-    @classmethod
-    def _make_data_offset_dict(self, spec_file):
-        total_lines_num = self._iter_count(spec_file)
-        offset_dict = OrderedDict()
-        with open(spec_file, 'rb') as f:
-            offset_dict[0]=f.tell()
-            for line_num, _ in tqdm(enumerate(f), total=total_lines_num):
-                offset_dict[line_num+1]=f.tell()
-        offset_dict.popitem() # remove last key
-        return(offset_dict)
-
-    @classmethod
-    def _save_pickle(self, offset_dict, data_offset_dict_file):
-        f_out = open(data_offset_dict_file, 'w')
-        for line in offset_dict:
-            offset = offset_dict[line]
-            f_out.write(str(line) +'\t'+ str(offset)+'\n')
-        f_out.close()
-        return(True)
-
-    @classmethod
-    def index_file(self, spec_file):
-        offset_dict = self._make_data_offset_dict(spec_file)
-        self._save_pickle(offset_dict, spec_file+'.offset')
-
-    @classmethod
-    def read_pickle(self, spec_file):
-        offset_file = spec_file + '.offset'
-        path = pathlib.Path(offset_file)
-        if(not (path.exists() and path.is_file())):
-            self.index_file(spec_file)
-
-        total_lines_num = self._iter_count(spec_file)
-        lines_num = total_lines_num - 1
-        offset_dict = OrderedDict()
-        f_in = open(offset_file, 'r')
-        for line in f_in:
-            (i, offset)=line.strip().split('\t')
-            offset_dict[int(i)]=int(offset)
-        f_in.close()
-        return(offset_dict, lines_num)
-
-    def read_lines(self, spec_file, spec_offset_dict):
-        with open(spec_file, 'r') as f:
-            arr=[]
-            for k in spec_offset_dict:
-                offset = spec_offset_dict[k]
-                f.seek(offset)
-                line = f.readline().strip()
-                if(re.match('^#', line)):
-                    continue
-                arr.append(line)
-            return arr
-
-    def load_spec(self, batch_size, spec_file):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        self.batch_size = batch_size
-        offset_dict, lines_num = self.read_pickle(spec_file)
-        lines=self.random_read_lines(spec_file, offset_dict, [3,10])
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-'''
 
 class MODEL:
     def __init__(self, meta, configs):
@@ -228,18 +37,6 @@ class MODEL:
         self._configs = configs
         self._utils = UTILS()
 
-        #self._mgfconverter = MGFConverter(meta)
-
-        '''
-        self._utils.parse_var(meta.tokens)
-        self._utils.parse_var(meta.special_tokens)
-        self._utils.parse_var(meta.residues)
-        self._utils.parse_var(meta.mass_dict)
-        self._utils.parse_var(self._configs)
-        '''
-
-        #self._Transformer = Transformer(meta=self._meta, configs=self._configs)
-        #self._utils.parse_var(self._Transformer)
         #self._mctts = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs)
 
         # Initialized later:
@@ -248,21 +45,6 @@ class MODEL:
         self.model = None
         self.loaders = None
         self.writer = None
-
-
-        '''
-        self._max_peaks = self.meta.max_peaks
-        self._min_charges = self.meta.min_charges
-        self._max_charges = self.meta.max_charges
-        self._min_mz = self.meta.min_mz
-        self._max_mz = self.meta.max_mz
-
-        print(self._max_peaks)
-        print(self._min_charges)
-        print(self._max_charges)
-        print(self._min_mz)
-        print(self._max_mz)
-        '''
 
     def spec_collate(self, item):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
@@ -306,17 +88,8 @@ class MODEL:
         print(valid_spec)
 
         #Training self.Transformer_N
-        print(mode + ' mode:')
-
-        if(mode=='.spec'):
-            train_spec_set = SpecDataSet(train_spec, False)
-            valid_spec_set = SpecDataSet(valid_spec, False)
-        elif(mode=='.h5'):
-            train_spec_set = HDF(train_spec)
-            valid_spec_set = HDF(valid_spec)
-        else:
-            sys.exit('mode must be .spec or .h5')
-
+        train_spec_set = HDF(train_spec)
+        valid_spec_set = HDF(valid_spec)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -324,41 +97,19 @@ class MODEL:
             collate_fn=self.spec_collate,
             shuffle=True,
         )
-        '''
-        '''
-
-        for batch in train_spec_set_loader:
-            outputs = self.Transformer_N(batch)
-            #pp.pprint(outputs)
-            #print('-'*100)
-            break
-
-        '''
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
             num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate
         )
-        '''
-
-        #self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
-
+        print('Training Transformer_N ...')
+        self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
 
-        '''
         #Training self.Transformer_C
-        print(mode + ' mode:')
-        
-        if(mode=='.spec'):
-            train_spec_set = SpecDataSet(train_spec, reverse=True)
-            valid_spec_set = SpecDataSet(valid_spec, reverse=True)
-        elif(mode=='.h5'):
-            train_spec_set = HDF(train_spec, reverse=True)
-            valid_spec_set = HDF(valid_spec, reverse=True)
-        else:
-            sys.exit('mode must be .spec or .h5')
-
+        train_spec_set = HDF(train_spec, reverse = True)
+        valid_spec_set = HDF(valid_spec, reverse = True)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
@@ -366,17 +117,15 @@ class MODEL:
             collate_fn=self.spec_collate,
             shuffle=True,
         )
-
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
             num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate
         )
-
+        print('Training Transformer_C ...')
         self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
-        '''
 
     def predict(self, spec_file=None):
         mp.set_start_method('spawn', force=True)
@@ -494,62 +243,93 @@ class MODEL:
             Determines whether to set the trainer up for model training
             or evaluation / inference.
         """
-        trainer_cfg_N = dict(
+        trainer_cfg = dict(
             accelerator=self._configs['Model']['Trainer']['accelerator'],
             devices=1,
             enable_checkpointing=False,
-        )
-
-        trainer_cfg_C = dict(
-            accelerator=self._configs['Model']['Trainer']['accelerator'],
-            devices=1,
-            enable_checkpointing=False,
+            precision=self._configs['Model']['Trainer']['precision'],
+            logger=False,
         )
 
         if train:
-            #print(self._configs['Train']['devices'])
             if self._configs['Model']['Trainer']['devices'] is None:
                 devices = "auto"
             else:
-                self._configs['Model']['Trainer']['devices']
+                devices = self._configs['Model']['Trainer']['devices']
 
-            additional_cfg_N = dict(
-                devices = devices,
-                callbacks = self.callbacks_N,
-                enable_checkpointing = self._configs['Model']['Trainer']['save_top_k'] is not None,
-                max_epochs = self._configs['Model']['Trainer']['epoch'],
+            # Configure loggers.
+            loggers = []
+            output_dir = 'output_dir'
+            overwrite_ckpt_check = 'overwrite_ckpt_check'
+            if self._configs['Model']['Trainer']['log_metrics'] or self._configs['Model']['Trainer']['tb_summarywriter']:
+                if not output_dir:
+                    logger.warning(
+                        "Output directory not set in model runner. "
+                        "No loss file or Tensorboard will be created."
+                    )
+                else:
+                    csv_log_dir = "csv_logs"
+                    tb_log_dir = "tensorboard"
+
+                    '''
+                    if self._configs['Model']['Trainer']['log_metrics']:
+                        if overwrite_ckpt_check:
+                            utils.check_dir_file_exists(
+                                output_dir, csv_log_dir
+                            )
+
+                        loggers.append(
+                            lightning.pytorch.loggers.CSVLogger(
+                                output_dir, version=csv_log_dir, name=None
+                            )
+                        )
+
+                    if self._configs['Model']['Trainer']['tb_summarywriter']:
+                        if overwrite_ckpt_check:
+                            utils.check_dir_file_exists(
+                                output_dir, tb_log_dir
+                            )
+
+                        loggers.append(
+                            lightning.pytorch.loggers.TensorBoardLogger(
+                                output_dir, version=tb_log_dir, name=None
+                            )
+                        )
+
+                    if len(loggers) > 0:
+                        self.callbacks.append(
+                            LearningRateMonitor(
+                                log_momentum=True, log_weight_decay=True
+                            ),
+                        )
+                    '''
+
+            additional_cfg = dict(
+                devices=devices,
+                val_check_interval=self._configs['Model']['Trainer']['val_check_interval'],
+                max_epochs=self._configs['Model']['Trainer']['epoch'],
                 num_sanity_val_steps=self._configs['Model']['Trainer']['num_sanity_val_steps'],
+                accumulate_grad_batches=self._configs['Model']['Trainer']['accumulate_grad_batches'],
+                gradient_clip_val=self._configs['Model']['Trainer']['gradient_clip_val'],
+                gradient_clip_algorithm=self._configs['Model']['Trainer']['gradient_clip_algorithm'],
+                #check_val_every_n_epoch=1,
+                check_val_every_n_epoch=None,
+                enable_checkpointing=True,
+                logger=loggers,
                 strategy=self._get_strategy(),
-                #val_check_interval=self.config.val_check_interval,
-                check_val_every_n_epoch=1,
-                #check_val_every_n_epoch=None,
             )
 
-            additional_cfg_C = dict(
-                devices = devices,
-                callbacks = self.callbacks_C,
-                enable_checkpointing = self._configs['Model']['Trainer']['save_top_k'] is not None,
-                max_epochs = self._configs['Model']['Trainer']['epoch'],
-                num_sanity_val_steps=self._configs['Model']['Trainer']['num_sanity_val_steps'],
-                strategy=self._get_strategy(),
-                #val_check_interval=self.config.val_check_interval,
-                check_val_every_n_epoch=1,
-                #check_val_every_n_epoch=None,
-            )
+            trainer_cfg.update(additional_cfg)
 
-            trainer_cfg_N.update(additional_cfg_N)
-            trainer_cfg_C.update(additional_cfg_C)
+            trainer_cfg_N = trainer_cfg.copy()
+            trainer_cfg_C = trainer_cfg.copy()
 
-        self.trainer_N = pl.Trainer(**trainer_cfg_N)
-        self.trainer_C = pl.Trainer(**trainer_cfg_C)
+            trainer_cfg_N['callbacks']=self.callbacks_N
+            trainer_cfg_C['callbacks']=self.callbacks_C
 
-    def initialize_tokenizer(self) -> None:
-        self.tokenizer = tokenizer_clss(
-            residues=self.config.residues,
-            reverse=self.config.reverse_peptides,
-            start_token=None,
-            stop_token="$",
-        )
+            self.trainer_N = pl.Trainer(**trainer_cfg_N)
+            self.trainer_C = pl.Trainer(**trainer_cfg_C)
+
     def initialize_model(self, mode=None, models_dir=None) -> None:
         models_dir = os.path.normpath(models_dir)
 
@@ -566,28 +346,28 @@ class MODEL:
             dim_feedforward = self._configs["Model"]["Transformer"]['dim_feedforward'],
             n_layers = self._configs["Model"]["Transformer"]['n_layers'],
             dropout = self._configs["Model"]["Transformer"]['dropout'],
-            dim_intensity = self._configs["Model"]["Transformer"]['dim_intensity'],
-            max_length = self._configs["Model"]["Transformer"]['max_length'],
-            residues = residues,
+            #dim_intensity = self._configs["Model"]["Transformer"]['dim_intensity'],
+            #max_length = self._configs["Model"]["Transformer"]['max_length'],
+            #residues = residues,
             max_charge = self._configs["Model"]["Transformer"]['max_charge'],
             precursor_mass_tol = self._configs["Model"]["Transformer"]['precursor_mass_tol'],
 
-            isotope_error_range = self._configs['Model']['Transformer']['isotope_error_range'],
+            isotope_error_range = tuple(self._configs['Model']['Transformer']['isotope_error_range']),
 
             min_peptide_len = self._configs["Model"]["Transformer"]['min_peptide_len'],
             n_beams = self._configs["Model"]["Transformer"]['n_beams'],
             top_match = self._configs["Model"]["Transformer"]['top_match'],
             n_log = self._configs["Model"]["Transformer"]['n_log'],
-
-            tb_summarywriter =self._configs['Model']['Transformer']['tb_summarywriter'],
-
+            #tb_summarywriter =self._configs['Model']['Transformer']['tb_summarywriter'],
             train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
             warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
-            max_iters=self._configs['Model']['Transformer']['max_iters'],
+            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
+            #max_iters=self._configs['Model']['Transformer']['max_iters'],
             lr=self._configs['Model']['Trainer']['learning_rate'],
             weight_decay=self._configs['Model']['Trainer']['weight_decay'],
             out_writer=self.writer,
             calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
+            tokenizer=None,
             meta = self._meta
         )
 
@@ -617,36 +397,53 @@ class MODEL:
             if(not os.path.exists(models_dir_C)):
                 os.makedirs(models_dir_C)
 
+            prefix = f"{datetime.now().strftime('%Y%m%d_%H%M%S_')}"
+
+            curr_filename = prefix + "{epoch}-{step}"
+            best_filename = prefix + "best"
             # Configure checkpoints.
-            if self._configs['Model']['Trainer']['save_top_k'] is not None:
-                self.callbacks_N = [
-                    ModelCheckpoint(
-                        dirpath=models_dir_N,
-                        monitor="valid_CELoss",
-                        mode="min",
-                        save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                        save_last='link', #Added by ChangYuqi
-                        enable_version_counter = False, #Added by ChangYuqi
-                    )
-                ]
+            self.callbacks_N = [
+                ModelCheckpoint(
+                    dirpath=models_dir_N,
+                    save_on_train_epoch_end=True,
+                    filename=curr_filename,
+                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
+                    save_last='link',  # Added by ChangYuqi
+                    enable_version_counter=False,
+                ),
+                ModelCheckpoint(
+                    dirpath=models_dir_N,
+                    monitor="valid_CELoss",
+                    filename=best_filename,
+                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
+                    save_last='link',  # Added by ChangYuqi
+                    enable_version_counter=False,
+                ),
+            ]
 
-                self.callbacks_C = [
-                    ModelCheckpoint(
-                        dirpath=models_dir_C,
-                        monitor="valid_CELoss",
-                        mode="min",
-                        save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                        save_last='link', #Added by ChangYuqi
-                        enable_version_counter = False, #Added by ChangYuqi
-                    )
-                ]
-            else:
-                self.callbacks_N = None
-                self.callbacks_C = None
-
+            self.callbacks_C = [
+                ModelCheckpoint(
+                    dirpath=models_dir_C,
+                    save_on_train_epoch_end=True,
+                    filename=curr_filename,
+                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
+                    save_last='link',  # Added by ChangYuqi
+                    enable_version_counter=False,
+                ),
+                ModelCheckpoint(
+                    dirpath=models_dir_C,
+                    monitor="valid_CELoss",
+                    filename=best_filename,
+                    #mode="min",
+                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
+                    save_last='link',  # Added by ChangYuqi
+                    enable_version_counter=False,
+                ),
+            ]
             self.initialize_trainer(train=True)
             self.Transformer_N = Transformer(**model_params)
             self.Transformer_C = Transformer(**model_params)
+
         elif(mode=='predict'):
             if(not os.path.exists(model_filename_N) or not os.path.exists(model_filename_C)):
                 sys.exit('Please check the directory of Transormer models!')

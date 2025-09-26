@@ -1,4 +1,5 @@
 import sys
+import warnings
 
 import numpy as np
 import pprint as pp
@@ -16,22 +17,47 @@ logger = logging.getLogger('PepGo')
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from collections.abc import Callable
-from depthcharge.encoders import FloatEncoder, PeakEncoder, PositionalEncoder
-from depthcharge.tokenizers import Tokenizer
 
+import depthcharge
+from depthcharge.encoders import FloatEncoder, PeakEncoder, PositionalEncoder
+from depthcharge.tokenizers import Tokenizer, PeptideTokenizer
 from depthcharge.transformers import (
     AnalyteTransformerDecoder,
     SpectrumTransformerEncoder,
 )
 
-#from depthcharge.tokenizers import PeptideTokenizer
-import depthcharge
 
 import lightning.pytorch as pl
-
 from .utils import UTILS
 
+torch.set_float32_matmul_precision('medium')   # <= 这里
+
+
 class SpectrumEncoder(SpectrumTransformerEncoder):
+    """
+    A Transformer encoder for input mass spectra.
+
+    Parameters
+    ----------
+    d_model : int, optional
+        The latent dimensionality to represent peaks in the mass
+        spectrum.
+    n_head : int, optional
+        The number of attention heads in each layer. ``d_model`` must be
+        divisible by ``n_head``.
+    dim_feedforward : int, optional
+        The dimensionality of the fully connected layers in the
+        Transformer layers of the model.
+    n_layers : int, optional
+        The number of Transformer layers.
+    dropout : float, optional
+        The dropout probability for all layers.
+    peak_encoder : PeakEncoder or bool, optional
+        The function to encode the (m/z, intensity) tuples of each mass
+        spectrum. `True` uses the default sinusoidal encoding and `False`
+        instead performs a 1 to `d_model` learned linear projection.
+    """
+
     def __init__(
         self,
         d_model: int = 128,
@@ -42,7 +68,9 @@ class SpectrumEncoder(SpectrumTransformerEncoder):
         peak_encoder: PeakEncoder | Callable | bool = True,
     ):
         """Initialize a SpectrumEncoder."""
-        super().__init__(d_model, n_head, dim_feedforward, n_layers, dropout, peak_encoder)
+        super().__init__(
+            d_model, n_head, dim_feedforward, n_layers, dropout, peak_encoder
+        )
 
         self.latent_spectrum = torch.nn.Parameter(torch.randn(1, 1, d_model))
 
@@ -53,10 +81,30 @@ class SpectrumEncoder(SpectrumTransformerEncoder):
         *args: torch.Tensor,
         **kwargs: dict,
     ) -> torch.Tensor:
+        """
+        Override global_token_hook to include latent_spectrum parameter.
 
-        return(self.latent_spectrum.squeeze(0).expand(mz_array.shape[0], -1))
+        Parameters
+        ----------
+        mz_array : torch.Tensor of shape (n_spectra, max_peaks)
+            The zero-padded m/z dimension for a batch of mass spectra.
+        intensity_array : torch.Tensor of shape (n_spectra, max_peaks)
+            The zero-padded intensity dimension for a batch of mass
+            spectra.
+        *args : torch.Tensor
+            Additional data passed with the batch.
+        **kwargs : dict
+            Additional data passed with the batch.
 
-class PeptideTokenizer(depthcharge.tokenizers.PeptideTokenizer):
+        Returns
+        -------
+        torch.Tensor of shape (batch_size, d_model)
+            The precursor representations.
+
+        """
+        return self.latent_spectrum.squeeze(0).expand(mz_array.shape[0], -1)
+
+class PeptideTokenizer(PeptideTokenizer):
     residues = {}
 
     #@abstractmethod
@@ -165,8 +213,39 @@ class PeptideTokenizer(depthcharge.tokenizers.PeptideTokenizer):
 
         return decoded
 
-
 class PeptideDecoder(AnalyteTransformerDecoder):
+    """
+    A transformer decoder for peptide sequences.
+
+    Parameters
+    ----------
+    n_tokens : int
+        The number of tokens used to tokenize peptide sequences.
+    d_model : int, optional
+        The latent dimensionality to represent peaks in the mass
+        spectrum.
+    n_head : int, optional
+        The number of attention heads in each layer. ``d_model`` must be
+        divisible by ``nhead``.
+    dim_feedforward : int, optional
+        The dimensionality of the fully connected layers in the
+        Transformer layers of the model.
+    n_layers : int, optional
+        The number of Transformer layers.
+    dropout : float, optional
+        The dropout probability for all layers.
+    positional_encoder : PositionalEncoder or bool, optional
+        The positional encodings to use for the amino acid sequence. If
+        ``True``, the default positional encoder is used. ``False``
+        disables positional encodings, typically only for ablation
+        tests.
+    padding_int : int or None, optional
+        The index that represents padding in the input sequence.
+        Required only if ``n_tokens`` was provided as an ``int``.
+    max_charge : int, optional
+        The maximum charge state for peptide sequences.
+    """
+
     def __init__(
         self,
         n_tokens: int | Tokenizer,
@@ -194,7 +273,6 @@ class PeptideDecoder(AnalyteTransformerDecoder):
 
         self.charge_encoder = torch.nn.Embedding(max_charge, d_model)
         self.mass_encoder = FloatEncoder(d_model)
-        self._utils = UTILS()
 
         # Override the output layer to have +1 in the second dimension
         # compared to the AnalyteTransformerDecoder to account for
@@ -237,161 +315,45 @@ class PeptideDecoder(AnalyteTransformerDecoder):
         precursors = masses + charges
         return precursors
 
-
-    def generate_tgt_mask(self, sz):
-        return ~torch.triu(torch.ones(sz, sz, dtype=torch.bool)).transpose(0, 1)
-
-    def myTokenize(self, sequence, partial=False):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-
-        self._utils.parse_var(sequence)
-        if not isinstance(sequence[0], str):
-            return sequence  # Assume it is already tokenized.
-
-        #if self.reverse:
-        #    sequence = list(reversed(sequence))
-
-        if not partial:
-            sequence += ["$"]
-
-        #tokens = [self._aa2idx[aa] for aa in sequence]
-        tokens = [self.index[aa] for aa in sequence]
-        tokens = torch.tensor(tokens, device=self.device)
-
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return(tokens)
-
-    def tokenize_residue(self, residue):
-        token = self._aa2idx[residue]
-        return(token)
-
-    def detokenize_residue(self, token):
-        #residue = self._idx2aa.get(token.item())
-        residue = self._idx2aa.get(token)
-        return(residue)
-
-    def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        if(peptides is not None):
-            tokens = [self.myTokenize(s, partial) for s in peptides]
-            tokens = torch.nn.utils.rnn.pad_sequence(tokens, batch_first=True)
-        else:
-            tokens = torch.tensor([[]]).to(self.device)
-
-        masses = self.mass_encoder(precursors[:, None, 0])
-        charges = self.charge_encoder(precursors[:, 1].int() - 1)
-        precursors = masses + charges[:, None, :]
-
-        if(peptides is None):
-            tgt = precursors
-        else:
-            tgt = torch.cat([precursors, self.aa_encoder(tokens)], dim=1)
-
-        tgt_key_padding_mask = tgt.sum(axis=2) == 0
-        tgt = self.pos_encoder(tgt)
-        tgt_mask = self.generate_tgt_mask(tgt.shape[1]).to(self.device)
-
-        preds = self.transformer_decoder(
-            tgt=tgt,
-            memory=memory,
-            tgt_mask=tgt_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
-            memory_key_padding_mask=memory_key_padding_mask.to(self.device),
-        )
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return self.final(preds), tokens
-
-
 class Transformer(pl.LightningModule):
-    def __init__(self,
-        dim_model: int = 512,
-        n_head: int = 8,
-        dim_feedforward: int = 1024,
-        n_layers: int = 9,
-        dropout: float = 0.0,
-        dim_intensity: Optional[int] = None,
-        max_peptide_len: int = 100,
-        max_length: int = 100,
-        residues: Union[Dict[str, float], str] = "canonical",
-        max_charge: int = 5,
-        precursor_mass_tol: float = 50,
-        isotope_error_range: Tuple[int, int] = (0, 1),
-        min_peptide_len: int = 6,
-        n_beams: int = 1,
-        top_match: int = 1,
-        n_log: int = 10,
-        tb_summarywriter: Optional[
-            torch.utils.tensorboard.SummaryWriter
-        ] = None,
-        train_label_smoothing: float = 0.01,
-        warmup_iters: int = 100_000,
-        cosine_schedule_period_iters: int = 600_000,
-        max_iters: int = 600_000,
-        #out_writer: Optional[ms_io.MztabWriter] = None,
-        out_writer = None,
-        calculate_precision: bool = False,
-        tokenizer=None,
-        meta = None,
-        **kwargs: Dict,
+    def __init__(
+            self,
+            dim_model: int = 512,
+            n_head: int = 8,
+            dim_feedforward: int = 1024,
+            n_layers: int = 9,
+            dropout: float = 0.0,
+            max_peptide_len: int = 100,
+            residues: str | Dict[str, float] = "canonical",
+            max_charge: int = 5,
+            precursor_mass_tol: float = 50,
+            isotope_error_range: Tuple[int, int] = (0, 1),
+            min_peptide_len: int = 6,
+            n_beams: int = 1,
+            top_match: int = 1,
+            n_log: int = 10,
+            train_label_smoothing: float = 0.01,
+            warmup_iters: int = 100_000,
+            cosine_schedule_period_iters: int = 600_000,
+            #out_writer: Optional[ms_io.MztabWriter] = None,
+            out_writer = None,
+            calculate_precision: bool = False,
+            tokenizer: PeptideTokenizer | None = None,
+            meta=None,
+            **kwargs: Dict,
     ):
         super().__init__()
+        self.save_hyperparameters()
+
         self._meta = meta
         self._proton = self._meta.proton
         self._mass_dict = self._meta.mass_dict
         self._utils = UTILS()
-        self.save_hyperparameters()
-
-        '''
-        print('self._meta.tokens',end=':')
-        print(len(self._meta.tokens))
-        pp.pprint(self._meta.tokens)
-        '''
 
         self.tokenizer = tokenizer or PeptideTokenizer(residues=self._meta.tokens, start_token=None, stop_token="$")
         self.vocab_size = len(self.tokenizer) + 1
 
-        #print('self.vocab_size', self.vocab_size)
-        '''
-        print('self.tokenizer.index',end=':')
-        print(len(self.tokenizer.index))
-        pp.pprint(dict(self.tokenizer.index))
-        print('-'*100)
-        '''
-
-        '''
-        print('self.tokenizer.reverse_index',end=':')
-        print(len(self.tokenizer.reverse_index))
-        print(type(self.tokenizer.reverse_index))
-        for i in range(len(self.tokenizer.reverse_index)):
-            print(i, self.tokenizer.reverse_index[i])
-        print('-'*100)
-        '''
-
-
-        '''
-        # 方法1: difference() 方法
-        diff1 = set(self.tokenizer.reverse_index).difference(set(self.tokenizer.index))
-        diff2 = set(self.tokenizer.index).difference(set(self.tokenizer.reverse_index))
-        print('diff1-2',end=':')  # 输出: {1, 2, 3}
-        print(len(diff1),len(diff2))
-        print(diff1,diff2)
-        '''
-
-
-        '''
-        print('PeptideDecoder',end=':')
-        self._utils.parse_class(PeptideTokenizer)
-        print('-'*100)
-        '''
-
-
-        '''
-        print('-'*100)
-        print('self.tokenizer:')
-        self._utils.parse_instance(self.tokenizer)
-        '''
-
+        # Build the model.
         self.encoder = SpectrumEncoder(
             d_model=dim_model,
             n_head=n_head,
@@ -399,7 +361,6 @@ class Transformer(pl.LightningModule):
             n_layers=n_layers,
             dropout=dropout,
         )
-
         self.decoder = PeptideDecoder(
             n_tokens=self.tokenizer,
             d_model=dim_model,
@@ -407,19 +368,97 @@ class Transformer(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             n_layers=n_layers,
             dropout=dropout,
+            max_charge=max_charge,
         )
 
-        #self._utils.parse_var(self.peptide_mass_calculator.masses.items())
-        #self._utils.parse_var(residues)
+        self.softmax = torch.nn.Softmax(2)
+        ignore_index = 0
+        self.celoss = torch.nn.CrossEntropyLoss(
+            ignore_index=ignore_index, label_smoothing=train_label_smoothing
+        )
+        self.val_celoss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
+        # Optimizer settings.
+        self.warmup_iters = warmup_iters
+        self.cosine_schedule_period_iters = cosine_schedule_period_iters
+        # `kwargs` will contain additional arguments as well as
+        # unrecognized arguments, including deprecated ones. Remove the
+        # deprecated ones.
 
-        #Function parameters() from torch.nn.Module returns an iterator over module parameters.
-        #This is typically passed to an optimizer.
+        self._config_deprecated = dict(
+            n_peaks="max_peaks",
+            every_n_train_steps="val_check_interval",
+            max_iters="cosine_schedule_period_iters",
+            max_length="max_peptide_len",
+            save_top_k=None,
+            model_save_folder_path=None,
+        )
 
-        #print('self.parameters()',end=':')
-        #print(next(self.parameters()).device)
-        #for param in self.parameters():
-            #print(type(param), param.size())
-            #print(param, type(param), param.size())
+        for k in self._config_deprecated:
+            kwargs.pop(k, None)
+            warnings.warn(
+                f"Deprecated hyperparameter '{k}' removed from the model.",
+                DeprecationWarning,
+            )
+        self.opt_kwargs = kwargs
+
+        # Data properties.
+        self.max_peptide_len = max_peptide_len
+        #self.residues = residues
+        self.precursor_mass_tol = precursor_mass_tol
+        self.isotope_error_range = isotope_error_range
+        self.min_peptide_len = min_peptide_len
+        self.n_beams = n_beams
+        self.top_match = top_match
+        self.stop_token = self.tokenizer.stop_int
+
+        # Logging.
+        self.calculate_precision = calculate_precision
+        self.n_log = n_log
+        self._history = []
+
+        # Output writer during predicting.
+        self.out_writer = out_writer
+
+    @property
+    def device(self) -> torch.device:
+        """
+        The device on which the model is currently running.
+
+        Returns
+        -------
+        torch.device
+            The device on which the model is currently running.
+        """
+        return next(self.parameters()).device
+
+    def forward(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> List[List[Tuple[float, np.ndarray, str]]]:
+        """
+        Predict peptide sequences for a batch of MS/MS spectra.
+
+        Parameters
+        ----------
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
+
+        Returns
+        -------
+        pred_peptides : List[List[Tuple[float, np.ndarray, str]]]
+            For each spectrum, a list with the top peptide predictions.
+            A peptide prediction consists of a tuple with the peptide
+            score, the amino acid scores, and the predicted peptide
+            sequence.
+        """
+        mzs, ints, precursors, tokens = self._process_batch(batch)
+
+        return self.beam_search_decode(mzs, ints, precursors)
+
+###---------------------------------------------OLD-----------------------------------------------------------
 
     '''
     #def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
@@ -873,56 +912,14 @@ class Transformer(pl.LightningModule):
         spectra, precursors, peptides = batch
         mzs = spectra[:,:,0]
         intensities = spectra[:,:,1]
-
-        print(peptides)
-        #tokens = self.tokenizer.tokenize(peptides)
         tokens = self.tokenizer.tokenize(peptides, add_stop=True)
 
+        mzs=mzs.to(self.decoder.device)
+        intensities=intensities.to(self.decoder.device)
+        precursors=precursors.to(self.decoder.device)
+        tokens=tokens.to(self.decoder.device)
+
         return(mzs, intensities, precursors, tokens)
-
-    def forward(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> List[List[Tuple[float, np.ndarray, str]]]:
-        """
-        Predict peptide sequences for a batch of MS/MS spectra.
-
-        Parameters
-        ----------
-        batch : Dict[str, torch.Tensor]
-            A batch from the SpectrumDataset, which contains keys:
-            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
-            ``precursor_charge``, each pointing to tensors with the
-            corresponding data. The ``seq`` key is optional and
-            contains the peptide sequences for training.
-
-        Returns
-        -------
-        pred_peptides : List[List[Tuple[float, np.ndarray, str]]]
-            For each spectrum, a list with the top peptide predictions.
-            A peptide prediction consists of a tuple with the peptide
-            score, the amino acid scores, and the predicted peptide
-            sequence.
-        """
-        mzs, ints, precursors, tokens = self._process_batch(batch)
-
-        print('\nmzs',end=':')
-        print(mzs.shape)
-        pp.pprint(mzs)
-
-        print('\nints:')
-        print(ints.shape)
-        pp.pprint(ints)
-
-        print('\nprecursors:')
-        print(precursors.shape)
-        pp.pprint(precursors)
-
-        print('\ntokens:')
-        print(tokens.shape)
-        pp.pprint(tokens)
-
-        #return self.beam_search_decode(mzs, ints, precursors)
-
 
     def _forward_step(
         self,
@@ -948,25 +945,8 @@ class Transformer(pl.LightningModule):
             The predicted tokens for each spectrum.
         """
         mzs, ints, precursors, tokens = self._process_batch(batch)
-
-        print('\nmzs',end=':')
-        print(mzs.shape)
-        pp.pprint(mzs)
-
-        print('\nints:')
-        print(ints.shape)
-        pp.pprint(ints)
-
-        print('\nprecursors:')
-        print(precursors.shape)
-        pp.pprint(precursors)
-
-        print('\ntokens:')
-        print(tokens.shape)
-        pp.pprint(tokens)
-
-
         memories, mem_masks = self.encoder(mzs, ints)
+
         scores = self.decoder(
             tokens=tokens,
             memory=memories,
@@ -975,12 +955,7 @@ class Transformer(pl.LightningModule):
         )
         return scores, tokens
 
-    def training_step(
-        self,
-        batch: Dict[str, torch.Tensor],
-        *args,
-        mode: str = "train",
-    ) -> torch.Tensor:
+    def training_step(self, batch: Dict[str, torch.Tensor], *args, mode: str = "train",) -> torch.Tensor:
         """
         A single training step.
 
@@ -1017,13 +992,59 @@ class Transformer(pl.LightningModule):
         )
         return loss
 
-    def on_train_start(self):
-        """Log optimizer settings."""
-        self.log("hp/optimizer_warmup_iters", self.warmup_iters)
-        self.log(
-            "hp/optimizer_cosine_schedule_period_iters",
-            self.cosine_schedule_period_iters,
+    def validation_step(self, batch: Dict[str, torch.Tensor], *args) -> torch.Tensor:
+        """
+        A single validation step.
+
+        Parameters
+        ----------
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
+
+        Returns
+        -------
+        torch.Tensor
+            The loss of the validation step.
+        """
+        # Record the loss.
+        loss = self.training_step(batch, mode="valid")
+        if not self.calculate_precision:
+            return loss
+
+        # Calculate and log amino acid and peptide match evaluation
+        # metrics from the predicted peptides.
+        # FIXME: Remove work around when depthcharge reverse detokenization
+        # bug is fixed.
+        # peptides_true = self.tokenizer.detokenize(batch["seq"])
+        peptides_true = [
+            "".join(pep)
+            for pep in self.tokenizer.detokenize(batch["seq"], join=False)
+        ]
+        peptides_pred = [
+            pred
+            for spectrum_preds in self.forward(batch)
+            for _, _, pred in spectrum_preds
+        ]
+        aa_precision, _, pep_precision = evaluate.aa_match_metrics(
+            *evaluate.aa_match_batch(
+                peptides_true, peptides_pred, self.tokenizer.residues
+            )
         )
+
+        batch_size = len(peptides_true)
+        log_args = dict(on_step=False, on_epoch=True, sync_dist=True)
+        self.log(
+            "pep_precision", pep_precision, **log_args, batch_size=batch_size
+        )
+        self.log(
+            "aa_precision", aa_precision, **log_args, batch_size=batch_size
+        )
+        return loss
 
     def on_train_epoch_end(self) -> None:
         """
@@ -1038,3 +1059,102 @@ class Transformer(pl.LightningModule):
         metrics = {"step": self.trainer.global_step, "train": train_loss}
         self._history.append(metrics)
         self._log_history()
+
+    def on_train_start(self):
+        """Log optimizer settings."""
+        self.log("hp/optimizer_warmup_iters", self.warmup_iters)
+        self.log(
+            "hp/optimizer_cosine_schedule_period_iters",
+            self.cosine_schedule_period_iters,
+        )
+
+    def _log_history(self) -> None:
+        """
+        Write log to console, if requested.
+        """
+        # Log only if all output for the current epoch is recorded.
+        if len(self._history) == 0:
+            return
+        if len(self._history) == 1:
+            header = "Step\tTrain loss\tValid loss\t"
+            if self.calculate_precision:
+                header += "Peptide precision\tAA precision"
+
+            logger.info(header)
+        metrics = self._history[-1]
+        if metrics["step"] % self.n_log == 0:
+            msg = "%i\t%.6f\t%.6f"
+            vals = [
+                metrics["step"],
+                metrics.get("train", np.nan),
+                metrics.get("valid", np.nan),
+            ]
+
+            if self.calculate_precision:
+                msg += "\t%.6f\t%.6f"
+                vals += [
+                    metrics.get("valid_pep_precision", np.nan),
+                    metrics.get("valid_aa_precision", np.nan),
+                ]
+
+            logger.info(msg, *vals)
+
+    def configure_optimizers(
+        self,
+    ) -> Tuple[List[torch.optim.Optimizer], Dict[str, Any]]:
+        """
+        Initialize the optimizer.
+
+        We use the Adam optimizer with a cosine learning rate scheduler.
+
+        Returns
+        -------
+        Tuple[List[torch.optim.Optimizer], Dict[str, Any]]
+            The initialized Adam optimizer and its learning rate
+            scheduler.
+        """
+        optimizer = torch.optim.Adam(self.parameters(), **self.opt_kwargs)
+        # Apply learning rate scheduler per step.
+        lr_scheduler = CosineWarmupScheduler(
+            optimizer, self.warmup_iters, self.cosine_schedule_period_iters
+        )
+        return [optimizer], {"scheduler": lr_scheduler, "interval": "step"}
+
+class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
+    """
+    Learning rate scheduler with linear warm-up followed by cosine
+    shaped decay.
+
+    Parameters
+    ----------
+    optimizer : torch.optim.Optimizer
+        Optimizer object.
+    warmup_iters : int
+        The number of iterations for the linear warm-up of the learning
+        rate.
+    cosine_schedule_period_iters : int
+        The number of iterations for the cosine half period of the
+        learning rate.
+    """
+
+    def __init__(
+            self,
+            optimizer: torch.optim.Optimizer,
+            warmup_iters: int,
+            cosine_schedule_period_iters: int,
+    ):
+        self.warmup_iters = warmup_iters
+        self.cosine_schedule_period_iters = cosine_schedule_period_iters
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
+        return [base_lr * lr_factor for base_lr in self.base_lrs]
+
+    def get_lr_factor(self, epoch):
+        lr_factor = 0.5 * (
+                1 + np.cos(np.pi * epoch / self.cosine_schedule_period_iters)
+        )
+        if epoch <= self.warmup_iters:
+            lr_factor *= epoch / self.warmup_iters
+        return lr_factor

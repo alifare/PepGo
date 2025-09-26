@@ -61,9 +61,15 @@ class MGFConverter(object):
                 else:
                     tokenized_seq += list(t)
 
+        print(tokenized_seq)
         tokenized_seq[0] = re.sub(r'^<[-+]', '', tokenized_seq[0])
-        if(tokenized_seq[-1]=='>'):
+        tokenized_seq[-1] = re.sub(r'[-+]>$', '', tokenized_seq[-1])
+        if(tokenized_seq[0]=='<'):
+            tokenized_seq = tokenized_seq[1:]
+        if (tokenized_seq[-1] == '>'):
             tokenized_seq = tokenized_seq[:-1]
+        print(tokenized_seq)
+        print('-'*100)
 
         tokenized_seq = ','.join(tokenized_seq)
         return(tokenized_seq)

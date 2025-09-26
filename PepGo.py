@@ -59,13 +59,11 @@ def main():
     if(args.command == 'mgfconvert'):
         mgf_converter = MGFConverter(meta)
         #mgf_converter.index_mgf(args.input, args.xml)
+        #mgf_converter.extract_ptms(args.input, 'tmp.ptm')
 
-        mgf_converter.extract_ptms(args.input, 'tmp.ptm')
         mgf_converter.readin_mass_ptm_dicts(args.ptm)
-
         #spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
         spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input)
-        #mgf_converter.convert_spec_to_h5(spec_file, dryrun=False)
         mgf_converter.convert_spec_to_h5(spec_file)
 
         '''
@@ -88,14 +86,12 @@ def main():
         model.train(train_spec=args.train, valid_spec=args.valid, mode=ext)
     elif(args.command == "predict"):
         start=time.time()
-        #model.initialize_trainer(train=False)
         model.initialize_model(mode='predict', models_dir=args.Transformers)
         model.predict(args.input)
         end=time.time()
         print('Total_time_consumed in prediction:',end=':')
         print(end-start)
     else:
-
         pass
 
 def read_configs(config_file):
