@@ -26,7 +26,6 @@ from depthcharge.transformers import (
     SpectrumTransformerEncoder,
 )
 
-
 import lightning.pytorch as pl
 from .utils import UTILS
 

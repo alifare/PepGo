@@ -245,11 +245,12 @@ class MODEL:
         """
         trainer_cfg = dict(
             accelerator=self._configs['Model']['Trainer']['accelerator'],
-            devices=1,
+            devices=None,
             enable_checkpointing=False,
             precision=self._configs['Model']['Trainer']['precision'],
             logger=False,
         )
+
 
         if train:
             if self._configs['Model']['Trainer']['devices'] is None:
@@ -319,13 +320,24 @@ class MODEL:
                 strategy=self._get_strategy(),
             )
 
+
             trainer_cfg.update(additional_cfg)
+            trainer_cfg['strategy']='ddp'
+
 
             trainer_cfg_N = trainer_cfg.copy()
             trainer_cfg_C = trainer_cfg.copy()
 
             trainer_cfg_N['callbacks']=self.callbacks_N
             trainer_cfg_C['callbacks']=self.callbacks_C
+
+            print('trainer_cfg',end=':')
+            print(len(trainer_cfg))
+            pp.pprint(trainer_cfg)
+            print('-'*100)
+            print('trainer_cfg_C',end=':')
+            print(len(trainer_cfg_C))
+            pp.pprint(trainer_cfg_C)
 
             self.trainer_N = pl.Trainer(**trainer_cfg_N)
             self.trainer_C = pl.Trainer(**trainer_cfg_C)
