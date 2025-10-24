@@ -430,9 +430,30 @@ class Transformer(pl.LightningModule):
         """
         return next(self.parameters()).device
 
-    def forward(
-        self, batch: Dict[str, torch.Tensor]
-    ) -> List[List[Tuple[float, np.ndarray, str]]]:
+    '''
+    # def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
+    def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
+        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' started ' + '+' * 100)
+        # self._utils.parse_var(batch)
+        mzs, intensities, precursors, seqs = self._process_batch(batch)
+        # print(seqs)
+
+        print('\nmzs:')
+        print(mzs.shape)
+        pp.pprint(mzs)
+
+        print('\nintensities:')
+        print(intensities.shape)
+        pp.pprint(intensities)
+
+        print('\nseqs:')
+        # print(seqs.shape)
+        pp.pprint(seqs)
+        sys.exit()
+        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
+        return (True)
+    '''
+    def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
         """
         Predict peptide sequences for a batch of MS/MS spectra.
 
@@ -457,33 +478,7 @@ class Transformer(pl.LightningModule):
 
         return self.beam_search_decode(mzs, ints, precursors)
 
-###---------------------------------------------OLD-----------------------------------------------------------
-
-    '''
-    #def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
-    def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
-        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' started ' + '+' * 100)
-        #self._utils.parse_var(batch)
-        mzs, intensities, precursors, seqs = self._process_batch(batch)
-        #print(seqs)
-
-        print('\nmzs:')
-        print(mzs.shape)
-        pp.pprint(mzs)
-
-        print('\nintensities:')
-        print(intensities.shape)
-        pp.pprint(intensities)
-
-
-        print('\nseqs:')
-        #print(seqs.shape)
-        pp.pprint(seqs)
-        sys.exit()
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return(True)
-
-
+###---------------------------------------------OLD START-----------------------------------------------------------
     def _get_top_peptide(
         self,
         pred_cache: Dict[int, List[Tuple[float, float, np.ndarray, torch.Tensor]]],
@@ -504,49 +499,6 @@ class Transformer(pl.LightningModule):
             else:
                 yield []
 
-
-    def validation_step(self, batch, *args) -> torch.Tensor:
-        #print('')
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        spectra, precursors, peptides = batch
-
-        peptides_true = [','.join(i) for i in peptides]
-
-        # Record the loss.
-        loss = self.training_step(batch, mode="valid")
-        if not self.calculate_precision:
-            return loss
-
-        # Calculate and log amino acid and peptide match evaluation metrics from the predicted peptides.
-        peptides_pred = self.beam_pred(spectra, precursors)
-        aa_precision, aa_recall, pep_precision = self.evaluate(peptides_true, peptides_pred)
-
-        log_args = dict(on_step=False, on_epoch=True, sync_dist=True)
-        self.log(
-            "Peptide precision at coverage=1",
-            pep_precision,
-            **log_args,
-        )
-        self.log(
-            "AA precision at coverage=1",
-            aa_precision,
-            **log_args,
-        )
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return(loss)
-
-
-    def predict_step(self, batch, *args):
-        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        spectra, precursors, peptides = batch
-        peptides_pred = self.beam_pred(spectra, precursors)
-
-        outputs=[peptides_pred, peptides]
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        return(outputs)
-
     def beam_pred(self, spectra, precursors):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
@@ -564,15 +516,6 @@ class Transformer(pl.LightningModule):
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(peptides_pred)
-
-    def on_predict_batch_end(self, outputs, *args) -> None:
-        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        predictions, peptides = outputs
-
-        for i in range(len(peptides)):
-            print(str(predictions[i])+'\n'+','.join(peptides[i])+'\n')
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
 
     def evaluate(self, peptides_true, peptides_pred):
         #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
@@ -610,6 +553,7 @@ class Transformer(pl.LightningModule):
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return([aa_precision, aa_recall, pep_precision])
+
 
     def my_finish_beams(
         self,
@@ -825,57 +769,25 @@ class Transformer(pl.LightningModule):
         beam_fits_precursor: torch.Tensor,
         pred_cache: Dict[int, List[Tuple[float, float, np.ndarray, torch.Tensor]]],
     ):
-        """
-        Cache terminated beams.
 
-        Parameters
-        ----------
-        tokens : torch.Tensor of shape (n_spectra * n_beams, max_length)
-            Predicted amino acid tokens for all beams and all spectra.
-         scores : torch.Tensor of shape
-         (n_spectra *  n_beams, max_length, n_amino_acids)
-            Scores for the predicted amino acid tokens for all beams and all
-            spectra.
-        step : int
-            Index of the current decoding step.
-        beams_to_cache : torch.Tensor of shape (n_spectra * n_beams)
-            Boolean tensor indicating whether the current beams are ready for
-            caching.
-        beam_fits_precursor: torch.Tensor of shape (n_spectra * n_beams)
-            Boolean tensor indicating whether the beams are within the
-            precursor m/z tolerance.
-        pred_cache : Dict[int, List[Tuple[float, float, np.ndarray, torch.Tensor]]]
-            Priority queue with finished beams for each spectrum, ordered by
-            peptide score. For each finished beam, a tuple with the (negated)
-            peptide score, amino acid-level scores, and the predicted tokens is
-            stored.
-        """
         beams_to_cache |= beam_fits_precursor
         for i in range(len(beams_to_cache)):
             if not beams_to_cache[i]:
                 continue
-            # Find the starting index of the spectrum.
             spec_idx = i // self.n_beams
-            # FIXME: The next 3 lines are very similar as what's done in
-            #  _finish_beams. Avoid code duplication?
             pred_tokens = tokens[i][: step + 1]
-            # Omit the stop token from the peptide sequence (if predicted).
             has_stop_token = pred_tokens[-1] == self.stop_token
             pred_peptide = pred_tokens[:-1] if has_stop_token else pred_tokens
-            # Don't cache this peptide if it was already predicted previously.
+
             if any(
                 torch.equal(pred_cached[-1], pred_peptide)
                 for pred_cached in pred_cache[spec_idx]
             ):
-                # TODO: Add duplicate predictions with their highest score.
                 continue
             smx = self.softmax(scores[i : i + 1, : step + 1, :])
-
             aa_scores = smx[0, range(len(pred_tokens)), pred_tokens].tolist()
             #self._utils.parse_var(aa_scores, 'A')
 
-            # Add an explicit score 0 for the missing stop token in case this
-            # was not predicted (i.e. early stopping).
             #if not has_stop_token:
             #    aa_scores.append(0)
             aa_scores = np.asarray(aa_scores)
@@ -884,12 +796,6 @@ class Transformer(pl.LightningModule):
             aa_scores, peptide_score = self.calculate_aa_pep_score(
                 aa_scores, beam_fits_precursor[i]
             )
-
-            # Omit the stop token from the amino acid-level scores.
-            #aa_scores = aa_scores[:-1]
-
-            # Add the prediction to the cache (minimum priority queue, maximum
-            # the number of beams elements).
 
             if len(pred_cache[spec_idx]) < self.n_beams:
                 heapadd = heapq.heappush
@@ -904,9 +810,10 @@ class Transformer(pl.LightningModule):
                     torch.clone(pred_peptide),
                 ),
             )
-'''
 
-###---------------------------------------------NEW-----------------------------------------------------------
+    ###---------------------------------------------OLD END-----------------------------------------------------------
+
+    ###---------------------------------------------NEW-----------------------------------------------------------
     def _process_batch(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         spectra, precursors, peptides = batch
         mzs = spectra[:,:,0]
@@ -920,10 +827,7 @@ class Transformer(pl.LightningModule):
 
         return(mzs, intensities, precursors, tokens)
 
-    def _forward_step(
-        self,
-        batch: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         The forward learning step.
 
@@ -992,6 +896,38 @@ class Transformer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], *args) -> torch.Tensor:
+        '''
+        #print('')
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        spectra, precursors, peptides = batch
+
+        peptides_true = [','.join(i) for i in peptides]
+
+        # Record the loss.
+        loss = self.training_step(batch, mode="valid")
+        if not self.calculate_precision:
+            return loss
+
+        # Calculate and log amino acid and peptide match evaluation metrics from the predicted peptides.
+        peptides_pred = self.beam_pred(spectra, precursors)
+        aa_precision, aa_recall, pep_precision = self.evaluate(peptides_true, peptides_pred)
+
+        log_args = dict(on_step=False, on_epoch=True, sync_dist=True)
+        self.log(
+            "Peptide precision at coverage=1",
+            pep_precision,
+            **log_args,
+        )
+        self.log(
+            "AA precision at coverage=1",
+            aa_precision,
+            **log_args,
+        )
+
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        return(loss)
+        '''
+
         """
         A single validation step.
 
@@ -1045,6 +981,62 @@ class Transformer(pl.LightningModule):
         )
         return loss
 
+    def predict_step(self, batch: Dict[str, torch.Tensor], *args) -> List[ms_io.PepSpecMatch]:
+        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #spectra, precursors, peptides = batch
+        #peptides_pred = self.beam_pred(spectra, precursors)
+
+        #outputs=[peptides_pred, peptides]
+
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #return(outputs)
+
+        """
+        A single prediction step.
+
+        Parameters
+        ----------
+        batch : Dict[str, torch.Tensor]
+            A batch from the SpectrumDataset, which contains keys:
+            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
+            ``precursor_charge``, each pointing to tensors with the
+            corresponding data. The ``seq`` key is optional and
+            contains the peptide sequences for training.
+
+        Returns
+        -------
+        predictions: List[psm.PepSpecMatch]
+            Predicted PSMs for the given batch of spectra.
+        """
+        predictions = []
+        for (
+            filename,
+            scan,
+            precursor_charge,
+            precursor_mz,
+            spectrum_preds,
+        ) in zip(
+            batch["peak_file"],
+            batch["scan_id"],
+            batch["precursor_charge"],
+            batch["precursor_mz"],
+            self.forward(batch),
+        ):
+            for peptide_score, aa_scores, peptide in spectrum_preds:
+                predictions.append(
+                    psm.PepSpecMatch(
+                        sequence=peptide,
+                        spectrum_id=(filename, scan),
+                        peptide_score=peptide_score,
+                        charge=int(precursor_charge),
+                        calc_mz=np.nan,
+                        exp_mz=precursor_mz.item(),
+                        aa_scores=aa_scores,
+                    )
+                )
+
+        return predictions
+
     def on_train_epoch_end(self) -> None:
         """
         Log the training loss at the end of each epoch.
@@ -1058,6 +1050,64 @@ class Transformer(pl.LightningModule):
         metrics = {"step": self.trainer.global_step, "train": train_loss}
         self._history.append(metrics)
         self._log_history()
+
+    def on_validation_epoch_end(self) -> None:
+        """
+        Log the validation metrics at the end of each epoch.
+        """
+        callback_metrics = self.trainer.callback_metrics
+        metrics = {
+            "step": self.trainer.global_step,
+            "valid": callback_metrics["valid_CELoss"].detach().item(),
+        }
+
+        if self.calculate_precision:
+            metrics["valid_aa_precision"] = (
+                callback_metrics["aa_precision"].detach().item()
+            )
+            metrics["valid_pep_precision"] = (
+                callback_metrics["pep_precision"].detach().item()
+            )
+        self._history.append(metrics)
+        self._log_history()
+
+    def on_predict_batch_end(self, outputs: List[psm.PepSpecMatch], *args) -> None:
+        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #predictions, peptides = outputs
+
+        #for i in range(len(peptides)):
+        #    print(str(predictions[i])+'\n'+','.join(peptides[i])+'\n')
+
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+
+        """
+        Write the predicted PSMs to the output file.
+
+        Parameters
+        ----------
+        outputs : List[psm.PepSpecMatch]
+            The predicted PSMs for the processed batch.
+        """
+        if self.out_writer is None:
+            return
+
+        for spec_match in outputs:
+            if not spec_match.sequence:
+                continue
+
+            # N terminal scores should be combined with first token
+            if len(spec_match.aa_scores) >= 2 and any(
+                spec_match.sequence.startswith(mod) for mod in self.n_term
+            ):
+                spec_match.aa_scores[1] *= spec_match.aa_scores[0]
+                spec_match.aa_scores = spec_match.aa_scores[1:]
+
+            # Compute the precursor m/z of the predicted peptide.
+            spec_match.calc_mz = self.tokenizer.calculate_precursor_ions(
+                spec_match.sequence, torch.tensor(spec_match.charge)
+            ).item()
+
+            self.out_writer.psms.append(spec_match)
 
     def on_train_start(self):
         """Log optimizer settings."""
@@ -1098,9 +1148,7 @@ class Transformer(pl.LightningModule):
 
             logger.info(msg, *vals)
 
-    def configure_optimizers(
-        self,
-    ) -> Tuple[List[torch.optim.Optimizer], Dict[str, Any]]:
+    def configure_optimizers(self) -> Tuple[List[torch.optim.Optimizer], Dict[str, Any]]:
         """
         Initialize the optimizer.
 

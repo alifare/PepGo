@@ -15,8 +15,8 @@ from model.model import MODEL
 def main():
     parser = argparse.ArgumentParser(description="PepGo for de novo peptide sequencing")
     subparsers = parser.add_subparsers(dest="command", help="Available sub-commands")
-    
-    #Global arguments 
+
+    #Global arguments
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument('-c', '--config', type=str, dest='config', default= os.path.join(current_dir, 'config.json'),
                         help='Configure file')
@@ -27,6 +27,7 @@ def main():
     mgfconverter.add_argument('input', type=str, default=None, help="Name of the input mgf file")
     mgfconverter.add_argument('-c', '--spec', type=str, dest='spec', default=None, help="Name of the output spec file")
     mgfconverter.add_argument('-p', '--ptm', type=str, dest='ptm', default=None, help="Name of the mass-ptm table")
+    mgfconverter.add_argument('-f', '--outformat', type=str, dest='outformat', default=None, help="Format of output file")
 
     #spec arguments
     tospec = subparsers.add_parser("tospec", help="Convert input files to .spec format")
@@ -42,7 +43,7 @@ def main():
                         help="Directory to save two Transformer models(./ckpt)")
     train.add_argument('-t', '--train', type=str, dest='train',default=None, help="Spec file for training")
     train.add_argument('-v', '--valid', type=str, dest='valid',default=None, help="Spec file for validation")
-    
+
     #Predict arguments
     predict = subparsers.add_parser('predict', help='Predicting peptides from spectra')
     predict.add_argument('-T', '--Transformers', type=str, dest='Transformers',default=None,
@@ -60,12 +61,19 @@ def main():
         mgf_converter = MGFConverter(meta)
         #mgf_converter.index_mgf(args.input, args.xml)
         #mgf_converter.extract_ptms(args.input, 'tmp.ptm')
-
         mgf_converter.readin_mass_ptm_dicts(args.ptm)
-        #spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
-        spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input)
-        mgf_converter.convert_spec_to_h5(spec_file)
-
+        if(args.outformat=='CasanovoMGF'):
+            casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input)
+        elif(args.outformat=='PointNovo'):
+            PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveMGF_to_PointNovo(args.input)
+        elif (args.outformat == 'PrimeNovo'):
+            PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(args.input,False)
+        elif(args.outformat=='spec'):
+            #spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
+            spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input)
+            mgf_converter.convert_spec_to_h5(spec_file)
+        else:
+            print('Nothing converted')
         '''
         mgf_converter.convert_mgf_to_spec(args.input)
         mgf_converter.convert_mgf_to_Casanovo(args.input)

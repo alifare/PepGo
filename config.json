@@ -9,6 +9,7 @@
 			"max_peaks":300
 		},
 		"Data":{
+			"replace_isoleucine_and_leucine_with_X":true,
 			"replace_isoleucine_with_leucine":true,
 			"_replace_isoleucine_with_leucine":false
 		},

@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import pprint as pp
 import numpy as np
@@ -7,11 +8,31 @@ import h5py, hdf5plugin
 import xmltodict
 import json
 
+import ast
+import operator
+
+from decimal import Decimal, ROUND_HALF_UP
+import re
+
+import re
+
+
+# 支持的操作符
+_OP_MAP = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
 from pyteomics import mgf
 from pyteomics.mgf import MGF
 
 class MGFConverter(object):
-    def __init__(self, meta):
+    def __init__(self, meta, dest_format=None):
         super().__init__()
         self._meta = meta
         self.pattern = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
@@ -19,7 +40,38 @@ class MGFConverter(object):
         self.pattern3 = r'[+-]\d+(?:\.\d+)?'
         self._mass_to_ptm = None
         self._ptm_to_mass = None
+        self._replace_isoleucine_and_leucine_with_X = self._meta.configs['Model']['Data']['replace_isoleucine_and_leucine_with_X']
         self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Data']['replace_isoleucine_with_leucine']
+        self.have_seen = dict()
+        self._dest_format = dest_format
+
+
+    def _eval(self, node):
+        """递归求值 AST 节点（仅允许数字与四则运算）"""
+        if isinstance(node, ast.Num):  # 3.14 、 7
+            return node.n
+        if isinstance(node, ast.BinOp):  # left + right
+            return _OP_MAP[type(node.op)](self._eval(node.left), self._eval(node.right))
+        if isinstance(node, ast.UnaryOp):  # -x
+            return _OP_MAP[type(node.op)](self._eval(node.operand))
+        raise ValueError("不支持的表达式")
+
+    def safe_eval(self, expr: str) -> float:
+        """安全计算字符串表达式"""
+        node = ast.parse(expr, mode='eval').body
+        return self._eval(node)
+
+    def eval_with_precision_policy(self, expr: str) -> str:
+        res = Decimal(str(self.safe_eval(expr)))  # 带符号的 Decimal
+        p = max(-Decimal(str(self.safe_eval(m.group()))).as_tuple().exponent
+                for m in re.finditer(r'[+-]?\d+(?:\.\d+)?', expr))
+        q = Decimal('0.1') ** p
+        # 用 'f' 格式化即可自动保留正负号
+        out = format(res.quantize(q), '+f')
+        # 去掉无意义的尾零和尾小数点，但保留负号
+        #out = out.rstrip('0').rstrip('.')
+
+        return(out)
 
     def index_mgf(self, mgf_file, xml_file=None):
         json_file = mgf_file.replace('.mgf', '-mgf-byte-offsets.json')
@@ -48,30 +100,122 @@ class MGFConverter(object):
             m = re.match(self.pattern, t)
             if(m):
                 name = m.group(1)
-                if(self._replace_isoleucine_with_leucine and (name=='I' or name=='L') ):
+                if(self._replace_isoleucine_and_leucine_with_X and (name=='I' or name=='L') ):
                     name='X'
                 nums = re.findall(self.pattern3, m.group(2))
+
                 mods = [self._mass_to_ptm[n] for n in nums]
                 mods.insert(0,name)
                 token = '+'.join(mods)
                 tokenized_seq.append(token)
             else:
-                if(self._replace_isoleucine_with_leucine):
+                if(self._replace_isoleucine_and_leucine_with_X):
                     tokenized_seq += list(t.replace('I', 'X').replace('L', 'X'))
                 else:
                     tokenized_seq += list(t)
 
-        print(tokenized_seq)
+        #print(tokenized_seq)
         tokenized_seq[0] = re.sub(r'^<[-+]', '', tokenized_seq[0])
         tokenized_seq[-1] = re.sub(r'[-+]>$', '', tokenized_seq[-1])
         if(tokenized_seq[0]=='<'):
             tokenized_seq = tokenized_seq[1:]
         if (tokenized_seq[-1] == '>'):
             tokenized_seq = tokenized_seq[:-1]
-        print(tokenized_seq)
-        print('-'*100)
+        #print(tokenized_seq)
+        #print('-'*100)
 
         tokenized_seq = ','.join(tokenized_seq)
+        return(tokenized_seq)
+
+    def replace_mass_with_token(self, m):
+        name = m.group(1)
+        nums_str = m.group(2)
+        nums = re.findall(self.pattern3, nums_str)
+        nums_size = len(nums)
+        mods = [self._mass_to_ptm[n] for n in nums]
+
+        if (self._replace_isoleucine_and_leucine_with_X and (name == 'I' or name == 'L')):
+            name = 'X'
+
+        if(self._dest_format=='Casanovo'):
+            if (nums_size > 1):
+                nums = self.eval_with_precision_policy(nums_str)
+            else:
+                nums = mods[0]
+            token = '[' + nums + ']'
+
+            if (name == '<'):
+                token = token + '-'
+            else:
+                token = name + token
+        elif(self._dest_format=='PointNovo'):
+            if (nums_size > 1):
+                nums = self.eval_with_precision_policy(nums_str)
+            else:
+                #nums = nums_str
+                nums = mods[0]
+            token = '(' + nums + ')'
+
+            if (name == '<'):
+                token = token
+            else:
+                token = name + token
+        elif(self._dest_format=='PrimeNovo'):
+            token = nums_str
+            if (name == '<'):
+                token = token
+            else:
+                token = name + token
+        else:
+            sys.exit('The dest_format must be specified')
+
+        if (nums_size > 1 and False):
+            if (nums_str not in self.have_seen):
+                self.have_seen[nums_str] = 1
+                print('name', end=':')
+                print(name)
+                print('nums_str', end=':')
+                print(nums_str)
+                print('nums', end=':')
+                print(nums)
+                print('mods', end=':')
+                print(mods)
+                print('token',end=':')
+                print(token)
+                print('-' * 100)
+
+        return(token)
+
+    def modify_seq_to_format(self, seq):
+        seq='<'+seq+'>'
+        tokens = [t for t in re.split(self.pattern2, seq) if t.strip()]
+
+        tokenized_seq=[]
+        for t in tokens:
+            m = re.match(self.pattern, t)
+            if(m):
+                token = self.replace_mass_with_token(m)
+                tokenized_seq.append(token)
+            else:
+                if(self._replace_isoleucine_and_leucine_with_X):
+                    tokenized_seq += list(t.replace('I', 'X').replace('L', 'X'))
+                else:
+                    tokenized_seq += list(t)
+
+        tokenized_seq[-1] = re.sub(r'[-+]>$', '', tokenized_seq[-1])
+        if(tokenized_seq[0]=='<'):
+            tokenized_seq = tokenized_seq[1:]
+        if (tokenized_seq[-1] == '>'):
+            tokenized_seq = tokenized_seq[:-1]
+
+        tokenized_seq = ''.join(tokenized_seq)
+        '''
+        print('seq',end=':\t')
+        print(seq)
+        print('tokenized_seq final',end=':')
+        print(tokenized_seq)
+        print('='*100)
+        '''
         return(tokenized_seq)
 
     def extract_ptms(self, mgf_file, ptm_file=None):
@@ -107,6 +251,166 @@ class MGFConverter(object):
         self._ptm_to_mass=ptm_to_mass
 
         return(mass_to_ptm, ptm_to_mass)
+
+    def batch_write_to_MGF(self, input_mgf, output_mgf=None):
+        spectra_buffer = []
+        batch_size = 100  # 每100个谱图写入一次
+
+        first_batch = True
+        with MGF(input_mgf) as reader:
+            mode = 'w'
+            for spectrum in reader:
+                #print('spectrum',end=':')
+                #print(type(spectrum))
+                #pp.pprint(spectrum)
+                seq = spectrum['params']['seq']
+                spectrum['params']['seq'] = self.modify_seq_to_format(seq)
+                if(self._dest_format=='PrimeNovo'):
+                    TITLE = spectrum['params']['provenance_filename']+','+ spectrum['params']['provenance_scan']
+                    PEPMASS = spectrum['params']['pepmass']
+                    CHARGE = spectrum['params']['charge']
+                    SCANS = spectrum['params']['scans']
+                    RTINSECONDS = 0.0
+                    SEQ = self.modify_seq_to_format(seq)
+                    spectrum['params']={
+                        'title':TITLE,
+                        'pepmass':PEPMASS,
+                        'charge':CHARGE,
+                        'scans':SCANS,
+                        'seq':SEQ,
+                        'rtinseconds':RTINSECONDS
+                    }
+                    #pp.pprint(spectrum)
+
+                #sys.exit()
+
+                spectra_buffer.append(spectrum)
+
+                # 批量写入以减少内存使用
+                if len(spectra_buffer) >= batch_size:
+                    mode = 'w' if first_batch else 'a'
+                    with open(output_mgf, mode) as f:
+                        mgf.write(spectra_buffer, f)
+                    spectra_buffer = []
+                    first_batch = False
+
+            # 写入剩余的谱图
+            if spectra_buffer:
+                with open(output_mgf, mode) as f:
+                    mgf.write(spectra_buffer, f)
+
+
+    def convert_MassiveMGF_to_PrimeNovo(self, mgf_file, dryrun=False):
+        self._dest_format='PrimeNovo'
+        PrimeNovo_mgf_file = mgf_file+'.PrimeNovo.mgf'
+        print('raw_mgf',end=':\t')
+        print(mgf_file)
+        print('PrimeNovo_mgf',end=':\t')
+        print(PrimeNovo_mgf_file)
+        if(not dryrun):
+            self.batch_write_to_MGF(mgf_file, PrimeNovo_mgf_file)
+
+        return(PrimeNovo_mgf_file)
+
+
+    def convert_MassiveMGF_to_PointNovo(self, mgf_file, dryrun=False):
+        self._dest_format='PointNovo'
+        PointNovo_mgf_file = mgf_file+'.PointNovo.mgf'
+        PointNovo_csv_file = mgf_file+'.PointNovo.csv'
+
+        print('mgf',end=':\t')
+        print(mgf_file)
+        print('PointNovo_mgf',end=':\t')
+        print(PointNovo_mgf_file)
+        print('PointNovo_csv',end=':\t')
+        print(PointNovo_csv_file)
+
+        if(not dryrun):
+            f_out_s1 = open(PointNovo_mgf_file, 'w')
+            f_out_f1 = open(PointNovo_csv_file, 'w')
+            f_out_f1.write('spec_group_id,m/z,z,rt_mean,seq,scans,profile,feature area,irt\n')
+
+            spectra_buffer = []
+            batch_size = 100  # 每100个谱图写入一次
+
+            first_batch = True
+            with MGF(mgf_file) as reader:
+                mode = 'w'
+                for spectrum in reader:
+                    #print('spectrum')
+                    #pp.pprint(spectrum)
+                    seq = spectrum['params']['seq']
+                    seq = self.modify_seq_to_format(seq)
+                    spectrum['params']['seq'] = seq
+
+                    spec_group_id = spectrum['params']['scan']
+                    mz = str(spectrum['params']['pepmass'][0])
+                    z = str(spectrum['params']['charge'][0])
+                    rt_mean = '0'
+
+                    scans = spectrum['params']['scans']
+                    feature_area = '10.0'
+                    irt = '0'
+                    profile = str(rt_mean) + ':' + str(feature_area)
+
+                    #print(seq)
+                    #print('-'*100)
+                    csv_arr = [spec_group_id, mz, z, rt_mean, seq, scans, profile, feature_area, irt]
+                    f_out_f1.write(','.join(csv_arr)+'\n')
+
+                    spectra_buffer.append(spectrum)
+
+                    # 批量写入以减少内存使用
+                    if len(spectra_buffer) >= batch_size:
+                        mode = 'w' if first_batch else 'a'
+                        with open(PointNovo_mgf_file, mode) as f:
+                            mgf.write(spectra_buffer, f)
+                        spectra_buffer = []
+                        first_batch = False
+
+                # 写入剩余的谱图
+                if spectra_buffer:
+                    with open(PointNovo_mgf_file, mode) as f:
+                        mgf.write(spectra_buffer, f)
+
+            f_out_s1.close()
+            f_out_f1.close()
+
+        return(PointNovo_mgf_file, PointNovo_csv_file)
+
+    def convert_MassiveMGF_to_CasanovoMGF(self, mgf_file, casanovomgf_file=None, dryrun=False):
+        self._dest_format='Casanovo'
+        if(not casanovomgf_file):
+            casanovomgf_file=mgf_file+'.casanovo.mgf'
+        if(dryrun):
+            return(casanovomgf_file)
+
+        spectra_buffer = []
+        batch_size = 100  # 每100个谱图写入一次
+
+        have_seen=dict()
+        first_batch = True
+        with MGF(mgf_file) as reader:
+            mode = 'w'
+            for spectrum in reader:
+                seq = spectrum['params']['seq']
+                spectrum['params']['seq'] = self.modify_seq_to_format(seq)
+                spectra_buffer.append(spectrum)
+
+                # 批量写入以减少内存使用
+                if len(spectra_buffer) >= batch_size:
+                    mode = 'w' if first_batch else 'a'
+                    with open(casanovomgf_file, mode) as f:
+                        mgf.write(spectra_buffer, f)
+                    spectra_buffer = []
+                    first_batch = False
+
+            # 写入剩余的谱图
+            if spectra_buffer:
+                with open(casanovomgf_file, mode) as f:
+                    mgf.write(spectra_buffer, f)
+
+        return(casanovomgf_file)
 
     def convert_MassiveMGF_to_spec(self, mgf_file, spec_file=None, dryrun=False):
         if(not spec_file):
