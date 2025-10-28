@@ -147,13 +147,16 @@ class MODEL:
         monte = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs,
                 Transformer_N=self.Transformer_N, Transformer_C=self.Transformer_C)
 
-        spec_set = SpecDataSet(spec_file, False)
+        #spec_set = SpecDataSet(spec_file, False)
+        spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
             batch_size=self._configs['Model']['Trainer']['test_batch_size'],
             num_workers=self._configs['Model']['Trainer']['num_workers'],
-            collate_fn=self.spec_collate
+            collate_fn=self.spec_collate,
         )
+
+        #sys.exit()
 
         for item in spec_set_loader:
             start=time.time()
@@ -343,6 +346,7 @@ class MODEL:
             self.trainer_C = pl.Trainer(**trainer_cfg_C)
 
     def initialize_model(self, mode=None, models_dir=None) -> None:
+        print(models_dir)
         models_dir = os.path.normpath(models_dir)
 
         models_dir_N = os.path.join(models_dir, 'ckpt_N')
@@ -352,6 +356,7 @@ class MODEL:
         model_filename_C = os.path.join(models_dir_C, 'last.ckpt')
 
         residues = self._meta.tokens
+
         model_params = dict(
             dim_model = self._configs["Model"]["Transformer"]['dim_model'],
             n_head = self._configs["Model"]["Transformer"]['n_head'],
@@ -402,6 +407,50 @@ class MODEL:
             calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
             meta = self._meta
         )
+
+        '''
+        model_params = dict(
+            precursor_mass_tol=self._configs["Model"]["Transformer"]['precursor_mass_tol'],
+            isotope_error_range=tuple(self._configs['Model']['Transformer']['isotope_error_range']),
+            min_peptide_len=self._configs["Model"]["Transformer"]['min_peptide_len'],
+            top_match=self._configs["Model"]["Transformer"]['top_match'],
+            n_beams=self._configs["Model"]["Transformer"]['n_beams'],
+            n_log=self._configs["Model"]["Transformer"]['n_log'],
+            max_charge=self._configs["Model"]["Transformer"]['max_charge'],
+            dim_model=self._configs["Model"]["Transformer"]['dim_model'],
+            n_head=self._configs["Model"]["Transformer"]['n_head'],
+            dim_feedforward=self._configs["Model"]["Transformer"]['dim_feedforward'],
+            n_layers=self._configs["Model"]["Transformer"]['n_layers'],
+            dropout=self._configs["Model"]["Transformer"]['dropout'],
+            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
+            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
+            lr=self._configs['Model']['Trainer']['learning_rate'],
+            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
+            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
+            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
+            out_writer=self.writer,
+            tokenizer=None,
+        )
+        '''
+
+        '''
+        loaded_model_params = dict(
+            precursor_mass_tol=self._configs['Model']['Transformer']['precursor_mass_tol'],
+            isotope_error_range=self._configs['Model']['Transformer']['isotope_error_range'],
+            min_peptide_len=self._configs['Model']['Transformer']['min_peptide_len'],
+            max_peptide_len=self._configs["Model"]["Transformer"]['max_length'],
+            top_match=self._configs['Model']['Transformer']['top_match'],
+            n_beams=self._configs['Model']['Transformer']['n_beams'],
+            n_log=self._configs['Model']['Transformer']['n_log'],
+            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
+            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
+            lr=self._configs['Model']['Trainer']['learning_rate'],
+            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
+            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
+            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
+            out_writer=self.writer,
+        )
+        '''
 
         if(mode=='train'):
             if(not os.path.exists(models_dir_N)):
@@ -516,6 +565,7 @@ class MODEL:
                     )
         else:
             sys.exit(0)
+
 
     def _get_strategy(self) -> Union[str, DDPStrategy]:
         """Get the strategy for the Trainer.

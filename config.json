@@ -43,7 +43,6 @@
 			"min_peptide_len": 6,
 			"precursor_mass_tol": 50.0,
 			"isotope_error_range": [0, 1],
-			"min_peptide_len": 6,
 			"n_beams": 1,
 			"top_match": 1,
 			"n_log": 1,
@@ -87,11 +86,11 @@
 			"depth_Transformer_beam":2
 		},
 		"Delta":{
-			"ceiling":13,
-			"_ceiling":5,
+			"_ceiling":13,
+			"ceiling":5,
 			"standard_deviation":0.005,
 			"mode":{
-				"probe_bisect_search":false,
+				"probe_bisect_search":true,
 				"transformer_bisect_search":true,
 				"transformer_beam_search":false
 			}

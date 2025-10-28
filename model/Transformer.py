@@ -981,8 +981,9 @@ class Transformer(pl.LightningModule):
         )
         return loss
 
+    '''
     def predict_step(self, batch: Dict[str, torch.Tensor], *args) -> List[ms_io.PepSpecMatch]:
-        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+            #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #spectra, precursors, peptides = batch
         #peptides_pred = self.beam_pred(spectra, precursors)
 
@@ -1036,6 +1037,7 @@ class Transformer(pl.LightningModule):
                 )
 
         return predictions
+    '''
 
     def on_train_epoch_end(self) -> None:
         """
@@ -1071,6 +1073,7 @@ class Transformer(pl.LightningModule):
         self._history.append(metrics)
         self._log_history()
 
+    '''
     def on_predict_batch_end(self, outputs: List[psm.PepSpecMatch], *args) -> None:
         #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #predictions, peptides = outputs
@@ -1079,7 +1082,7 @@ class Transformer(pl.LightningModule):
         #    print(str(predictions[i])+'\n'+','.join(peptides[i])+'\n')
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-
+    
         """
         Write the predicted PSMs to the output file.
 
@@ -1108,6 +1111,7 @@ class Transformer(pl.LightningModule):
             ).item()
 
             self.out_writer.psms.append(spec_match)
+    '''
 
     def on_train_start(self):
         """Log optimizer settings."""

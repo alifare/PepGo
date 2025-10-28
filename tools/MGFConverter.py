@@ -32,19 +32,39 @@ from pyteomics import mgf
 from pyteomics.mgf import MGF
 
 class MGFConverter(object):
-    def __init__(self, meta, dest_format=None):
+    def __init__(self, meta, input_format=None, output_format=None):
         super().__init__()
         self._meta = meta
-        self.pattern = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
+        self.pattern1 = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern2 = r'([A-Z<>][+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern3 = r'[+-]\d+(?:\.\d+)?'
+
+        self.pattern4 = r'([A-Z<>])(\([+-]\d*(?:\.\d+)\)?(?:\([+-]\d*(?:\.\d+)\)?)*)'
+        self.pattern5 = r'([A-Z<>]\([+-]\d*(?:\.\d+)\)?(?:\([+-]\d*(?:\.\d+)\)?)*)'
+        self.pattern6 = r'\([+-]\d*(?:\.\d+)?\)'
+
         self._mass_to_ptm = None
         self._ptm_to_mass = None
         self._replace_isoleucine_and_leucine_with_X = self._meta.configs['Model']['Data']['replace_isoleucine_and_leucine_with_X']
         self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Data']['replace_isoleucine_with_leucine']
         self.have_seen = dict()
-        self._dest_format = dest_format
+        
+        self._input_format = input_format
+        self._output_format = output_format
 
+        print('input_format',end=':\t')
+        print(self._input_format)
+        print('output_format',end=':\t')
+        print(self._output_format)
+
+        if((not self._input_format) or (not self._output_format)):
+            raise ValueError('input_format or output_format must be specified!')
+
+    def set_input_format(self, input_format=None):
+        self._input_format = input_format
+        
+    def set_output_format(self, output_format=None):
+        self._output_format = output_format
 
     def _eval(self, node):
         """递归求值 AST 节点（仅允许数字与四则运算）"""
@@ -87,7 +107,7 @@ class MGFConverter(object):
 
     def capture_mods_in_digits(self, seq=None):
         seq='<'+seq+'>'
-        mods = re.findall(self.pattern, seq)
+        mods = re.findall(self.pattern1, seq)
         result = [(name, [x for x in re.findall(self.pattern3, nums)]) for name, nums in mods]
 
         return(result)
@@ -97,7 +117,7 @@ class MGFConverter(object):
         tokens = [t for t in re.split(self.pattern2, seq) if t.strip()]
         tokenized_seq=[]
         for t in tokens:
-            m = re.match(self.pattern, t)
+            m = re.match(self.pattern1, t)
             if(m):
                 name = m.group(1)
                 if(self._replace_isoleucine_and_leucine_with_X and (name=='I' or name=='L') ):
@@ -127,17 +147,39 @@ class MGFConverter(object):
         tokenized_seq = ','.join(tokenized_seq)
         return(tokenized_seq)
 
-    def replace_mass_with_token(self, m):
+    def replace_mass_with_token(self, m, mode):
         name = m.group(1)
         nums_str = m.group(2)
-        nums = re.findall(self.pattern3, nums_str)
+
+        if(mode=='MassIVE_KB'):
+            split_pattern=self.pattern2
+            match_pattern=self.pattern1
+            find_pattern=self.pattern3
+        elif(mode=='9species'):
+            split_pattern=self.pattern5
+            match_pattern=self.pattern4
+            find_pattern=self.pattern6
+        else:
+            raise ValueError('The mode must be MassIVE_KB or 9species')
+
+        nums = re.findall(find_pattern, nums_str)
         nums_size = len(nums)
+
         mods = [self._mass_to_ptm[n] for n in nums]
+
+        '''
+        print('name',end=':\t')
+        print(name)
+        print('mods',end=':\t')
+        print(mods)
+        print('nums_str',end=':\t')
+        print(nums_str)
+        '''
 
         if (self._replace_isoleucine_and_leucine_with_X and (name == 'I' or name == 'L')):
             name = 'X'
 
-        if(self._dest_format=='Casanovo'):
+        if(self._output_format=='Casanovo'):
             if (nums_size > 1):
                 nums = self.eval_with_precision_policy(nums_str)
             else:
@@ -148,7 +190,7 @@ class MGFConverter(object):
                 token = token + '-'
             else:
                 token = name + token
-        elif(self._dest_format=='PointNovo'):
+        elif(self._output_format=='PointNovo'):
             if (nums_size > 1):
                 nums = self.eval_with_precision_policy(nums_str)
             else:
@@ -160,14 +202,20 @@ class MGFConverter(object):
                 token = token
             else:
                 token = name + token
-        elif(self._dest_format=='PrimeNovo'):
+        elif(self._output_format=='PrimeNovo'):
             token = nums_str
             if (name == '<'):
                 token = token
             else:
                 token = name + token
+        elif (self._output_format == 'PepGo'):
+            token = '+'.join(mods)
+            if (name == '<'):
+                token = token
+            else:
+                token = name +'+'+ token
         else:
-            sys.exit('The dest_format must be specified')
+            sys.exit('The output_format must be specified')
 
         if (nums_size > 1 and False):
             if (nums_str not in self.have_seen):
@@ -186,15 +234,33 @@ class MGFConverter(object):
 
         return(token)
 
-    def modify_seq_to_format(self, seq):
+    def modify_seq_to_format(self, seq, mode='MassIVE_KB'):
         seq='<'+seq+'>'
-        tokens = [t for t in re.split(self.pattern2, seq) if t.strip()]
+
+        if(mode=='MassIVE_KB'):
+            split_pattern=self.pattern2
+            match_pattern=self.pattern1
+        elif(mode=='9species'):
+            split_pattern=self.pattern5
+            match_pattern=self.pattern4
+        else:
+            raise ValueError('The mode must be MassIVE_KB or 9species')
+
+        char_join=''
+        if(self._output_format == 'PepGo'):
+            char_join = ','
+        tokens = [t for t in re.split(split_pattern, seq) if t.strip()]
+
+        #print('mode', end=':\t')
+        #print(mode)
+        #print('tokens',end=':\t')
+        #print(tokens)
 
         tokenized_seq=[]
         for t in tokens:
-            m = re.match(self.pattern, t)
+            m = re.match(match_pattern, t)
             if(m):
-                token = self.replace_mass_with_token(m)
+                token = self.replace_mass_with_token(m, mode)
                 tokenized_seq.append(token)
             else:
                 if(self._replace_isoleucine_and_leucine_with_X):
@@ -208,14 +274,8 @@ class MGFConverter(object):
         if (tokenized_seq[-1] == '>'):
             tokenized_seq = tokenized_seq[:-1]
 
-        tokenized_seq = ''.join(tokenized_seq)
-        '''
-        print('seq',end=':\t')
-        print(seq)
-        print('tokenized_seq final',end=':')
-        print(tokenized_seq)
-        print('='*100)
-        '''
+        tokenized_seq = char_join.join(tokenized_seq)
+
         return(tokenized_seq)
 
     def extract_ptms(self, mgf_file, ptm_file=None):
@@ -250,6 +310,9 @@ class MGFConverter(object):
         self._mass_to_ptm=mass_to_ptm
         self._ptm_to_mass=ptm_to_mass
 
+        print('self._mass_to_ptm')
+        print(self._mass_to_ptm)
+
         return(mass_to_ptm, ptm_to_mass)
 
     def batch_write_to_MGF(self, input_mgf, output_mgf=None):
@@ -265,7 +328,7 @@ class MGFConverter(object):
                 #pp.pprint(spectrum)
                 seq = spectrum['params']['seq']
                 spectrum['params']['seq'] = self.modify_seq_to_format(seq)
-                if(self._dest_format=='PrimeNovo'):
+                if(self._output_format=='PrimeNovo'):
                     TITLE = spectrum['params']['provenance_filename']+','+ spectrum['params']['provenance_scan']
                     PEPMASS = spectrum['params']['pepmass']
                     CHARGE = spectrum['params']['charge']
@@ -301,7 +364,6 @@ class MGFConverter(object):
 
 
     def convert_MassiveMGF_to_PrimeNovo(self, mgf_file, dryrun=False):
-        self._dest_format='PrimeNovo'
         PrimeNovo_mgf_file = mgf_file+'.PrimeNovo.mgf'
         print('raw_mgf',end=':\t')
         print(mgf_file)
@@ -314,7 +376,6 @@ class MGFConverter(object):
 
 
     def convert_MassiveMGF_to_PointNovo(self, mgf_file, dryrun=False):
-        self._dest_format='PointNovo'
         PointNovo_mgf_file = mgf_file+'.PointNovo.mgf'
         PointNovo_csv_file = mgf_file+'.PointNovo.csv'
 
@@ -379,7 +440,6 @@ class MGFConverter(object):
         return(PointNovo_mgf_file, PointNovo_csv_file)
 
     def convert_MassiveMGF_to_CasanovoMGF(self, mgf_file, casanovomgf_file=None, dryrun=False):
-        self._dest_format='Casanovo'
         if(not casanovomgf_file):
             casanovomgf_file=mgf_file+'.casanovo.mgf'
         if(dryrun):
@@ -412,7 +472,49 @@ class MGFConverter(object):
 
         return(casanovomgf_file)
 
-    def convert_MassiveMGF_to_spec(self, mgf_file, spec_file=None, dryrun=False):
+    def convert_9SpeciesMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False):
+        if(not spec_file):
+            spec_file=mgf_file+'.spec'
+        if(dryrun):
+            return(spec_file)
+
+        f_out=open(spec_file, 'w')
+        f_out.write('#Scans\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
+
+        with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
+            for spectrum in reader:
+                scans = spectrum['params'].get('scans', None)
+
+                charge = int(spectrum['params']['charge'][0])
+
+                pepmass = spectrum['params']['pepmass'][0]
+                precursor_mass = pepmass * charge - self._meta.proton * charge
+
+                seq = spectrum['params']['seq']
+                #print('seq',end=':\t')
+                #print(seq)
+                tokenized_seq = self.modify_seq_to_format(seq, mode='9species')
+                #print('tokenized_seq',end=':\t')
+                #print(tokenized_seq)
+                #print('-'*100)
+
+                mz_array = spectrum['m/z array']                 # numpy.ndarray
+                it_array = spectrum['intensity array']           # numpy.ndarray
+
+                if(len(mz_array)!=len(it_array)):
+                    raise ValueError('Lengths of mz array and intensity array mismatch')
+
+                peaks=[]
+                for mz, it in zip(mz_array, it_array):
+                    peaks.append(str(mz)+':'+str(it))
+                peaks=','.join(peaks)
+                output_line = [str(scans), tokenized_seq, str(precursor_mass), str(charge), '-', peaks]
+                f_out.write('\t'.join(output_line) + '\n')
+        f_out.close()
+
+        return(spec_file)
+
+    def convert_MassiveKBmgf_to_PepGo(self, mgf_file, spec_file=None, dryrun=False):
         if(not spec_file):
             spec_file=mgf_file+'.spec'
         if(dryrun):
@@ -423,7 +525,11 @@ class MGFConverter(object):
 
         with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
             for spectrum in reader:
-                scan = spectrum['params']['scan']
+                #scan = spectrum['params']['scan'] or None
+                scan = spectrum['params'].get('scan', None)
+                if(scan==None):
+                    scan = spectrum['params'].get('scans', None)
+
                 charge = int(spectrum['params']['charge'][0])
 
                 pepmass = spectrum['params']['pepmass'][0]
@@ -442,7 +548,7 @@ class MGFConverter(object):
                 for mz, it in zip(mz_array, it_array):
                     peaks.append(str(mz)+':'+str(it))
                 peaks=','.join(peaks)
-                output_line = [scan, tokenized_seq, str(precursor_mass), str(charge), '-', peaks]
+                output_line = [str(scan), tokenized_seq, str(precursor_mass), str(charge), '-', peaks]
                 f_out.write('\t'.join(output_line) + '\n')
         f_out.close()
 

@@ -25,9 +25,10 @@ def main():
     mgfconverter = subparsers.add_parser("mgfconvert", help="Convert input mgf files to multiple formats")
     mgfconverter.add_argument("-x", "--xml", type=str, dest='xml',help="XML file along with the mgf file")
     mgfconverter.add_argument('input', type=str, default=None, help="Name of the input mgf file")
-    mgfconverter.add_argument('-c', '--spec', type=str, dest='spec', default=None, help="Name of the output spec file")
+    mgfconverter.add_argument('-o', '--output', type=str, dest='output', default=None, help="Name of the output file")
     mgfconverter.add_argument('-p', '--ptm', type=str, dest='ptm', default=None, help="Name of the mass-ptm table")
     mgfconverter.add_argument('-f', '--outformat', type=str, dest='outformat', default=None, help="Format of output file")
+    mgfconverter.add_argument('-i', '--informat', type=str, dest='informat', default=None, help="Format of input file")
 
     #spec arguments
     tospec = subparsers.add_parser("tospec", help="Convert input files to .spec format")
@@ -51,29 +52,31 @@ def main():
     predict.add_argument('input', type=str, default=None, help="Name of the spec file for prediction")
 
     args = parser.parse_args()
-    #print('args:')
-    #pp.pprint(args)
+    print('args:')
+    pp.pprint(args)
 
     configs = read_configs(args.config)
     meta = META(configs)
     model = MODEL(meta, configs)
     if(args.command == 'mgfconvert'):
-        mgf_converter = MGFConverter(meta)
+        mgf_converter = MGFConverter(meta, args.informat, args.outformat)
         #mgf_converter.index_mgf(args.input, args.xml)
         #mgf_converter.extract_ptms(args.input, 'tmp.ptm')
         mgf_converter.readin_mass_ptm_dicts(args.ptm)
-        if(args.outformat=='CasanovoMGF'):
+        if(args.informat=='MassIVE_KB' and args.outformat=='CasanovoMGF'):
             casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input)
-        elif(args.outformat=='PointNovo'):
+        elif(args.informat=='MassIVE_KB' and args.outformat=='PointNovo'):
             PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveMGF_to_PointNovo(args.input)
-        elif (args.outformat == 'PrimeNovo'):
+        elif (args.informat=='MassIVE_KB' and args.outformat == 'PrimeNovo'):
             PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(args.input,False)
-        elif(args.outformat=='spec'):
-            #spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input, dryrun=True)
-            spec_file = mgf_converter.convert_MassiveMGF_to_spec(args.input)
+        elif(args.informat=='MassIVE_KB' and args.outformat=='spec'):
+            spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input)
+            mgf_converter.convert_spec_to_h5(spec_file)
+        elif(args.informat=='9species' and args.outformat=='PepGo'):
+            spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
         else:
-            print('Nothing converted')
+            raise ValueError('Nothing converted')
         '''
         mgf_converter.convert_mgf_to_spec(args.input)
         mgf_converter.convert_mgf_to_Casanovo(args.input)
