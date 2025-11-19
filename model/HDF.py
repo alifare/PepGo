@@ -4,24 +4,26 @@ from torch.utils.data import DataLoader
 import pprint as pp
 
 class HDF(torch.utils.data.Dataset):
-    def __init__(self, hdf_file, dataset: str = 'default', workers=None, reverse=False):
+    def __init__(self, hdf_file, dataset: str = 'default', reverse=False):
         super().__init__()
         self.hdf_file = hdf_file
         self.dataset = dataset
-        self.workers = workers
         self.reverse = reverse
 
-        self.h5 = h5py.File(self.hdf_file, 'r', swmr=True)
-        self.dset = self.h5[dataset]
-
-    def __getitem__(self, idx):
-        line = self.dset[idx]
-        sample = self._parse_line(line)
-        return (sample)
+        with h5py.File(self.hdf_file, 'r') as h5:
+            self.dset_shape = h5[dataset].shape
+            self.dset_size = h5[dataset].size
 
     def __len__(self):
-        size = self.dset.size
-        return (size)
+        return(self.dset_size)
+
+    def __getitem__(self, idx):
+        # 每次读取时打开文件（支持多进程）
+        with h5py.File(self.hdf_file, 'r') as h5:
+            dset = h5[self.dataset]
+            line = dset[idx]
+            sample = self._parse_line(line)
+            return(sample)
 
     def _parse_line(self, line):
         line = line.decode().strip()
@@ -37,4 +39,4 @@ class HDF(torch.utils.data.Dataset):
             y = y[::-1]
 
         sample = [x, y, [mass], [charge]]
-        return (sample)
+        return(sample)

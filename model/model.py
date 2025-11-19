@@ -5,7 +5,6 @@ import sys
 import time
 from datetime import datetime
 
-import pathlib
 import pandas as pd
 import warnings
 import numpy as np
@@ -18,16 +17,28 @@ import torch
 import torch.multiprocessing as mp
 from torch.multiprocessing import Process, Manager, Pool
 
+import lightning
 import lightning.pytorch as pl
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
-
 
 from .Transformer import Transformer
 from .MCTTS import Monte_Carlo_Double_Root_Tree
 from .utils import UTILS
 from .HDF import HDF
-import pprint as pp
+from pprint import pprint
+
+import logging
+logger = logging.getLogger("PepGo")
+
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Checkpoint directory .* exists and is not empty.*",
+    category=UserWarning,
+    module="lightning.pytorch.callbacks.model_checkpoint"
+)
+print("✅ 已禁用Checkpoint路径已存在警告")
 
 class MODEL:
     def __init__(self, meta, configs):
@@ -37,14 +48,17 @@ class MODEL:
         self._configs = configs
         self._utils = UTILS()
 
-        #self._mctts = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs)
-
         # Initialized later:
         self.tmp_dir = None
-        self.trainer = None
-        self.model = None
+        self.trainer_N = None
+        self.trainer_C = None
+        self.Transformer_N = None
+        self.Transformer_C = None
+
         self.loaders = None
         self.writer = None
+
+        self.current_datetime = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     def spec_collate(self, item):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
@@ -82,10 +96,12 @@ class MODEL:
         return(batch)
 
     def train(self, train_spec=None, valid_spec=None, mode=None):
+        '''
         print('Train set',end=':')
         print(train_spec)
         print('Valid set',end=':')
         print(valid_spec)
+        '''
 
         #Training self.Transformer_N
         train_spec_set = HDF(train_spec)
@@ -103,7 +119,7 @@ class MODEL:
             num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate
         )
-        print('Training Transformer_N ...')
+        #print('Training Transformer_N ...')
         self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
 
@@ -123,11 +139,12 @@ class MODEL:
             num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate
         )
-        print('Training Transformer_C ...')
-        self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
+        #print('Training Transformer_C ...')
+        #self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
 
     def predict(self, spec_file=None):
+        self.initialize_trainer(train=False)
         mp.set_start_method('spawn', force=True)
 
         out_file = os.path.basename(spec_file) \
@@ -145,7 +162,7 @@ class MODEL:
         f_out.write('probe\tT_bisect\tT_beam\n')
 
         monte = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs,
-                Transformer_N=self.Transformer_N, Transformer_C=self.Transformer_C)
+                                             Transformer_N=self.Transformer_N, Transformer_C=self.Transformer_C)
 
         #spec_set = SpecDataSet(spec_file, False)
         spec_set = HDF(spec_file)
@@ -156,7 +173,12 @@ class MODEL:
             collate_fn=self.spec_collate,
         )
 
-        #sys.exit()
+        N_memories, N_mem_masks, N_precursors, N_peptides = self.trainer_N.predict(model=self.Transformer_N, dataloaders=spec_set_loader)
+        #C_memories, C_mem_masks, C_precursors, C_peptides = self.trainer_C.predict(model=self.Transformer_C, dataloaders=spec_set_loader)
+        #print('N_memories',end=':')
+        #print(N_memories.shape)
+
+        sys.exit()
 
         for item in spec_set_loader:
             start=time.time()
@@ -237,178 +259,103 @@ class MODEL:
         torch.cuda.empty_cache()
         return(True)
 
-    def initialize_trainer(self, train: bool) -> None:
-        """Initialize the lightning Trainer.
+    def configure_callbacks(self, model_dir: str):
+        curr_filename = self.current_datetime + "-{epoch:02d}-{step}-{valid_CELoss:.3f}"
+        checkpoints_dir = os.path.join(model_dir, 'checkpoints')
 
-        Parameters
-        ----------
-        train : bool
-            Determines whether to set the trainer up for model training
-            or evaluation / inference.
-        """
+        # 2. 历史快照（验证损失排序），可留多个
+        hist_cb = ModelCheckpoint(
+            filename=curr_filename,
+            every_n_epochs=1,
+            dirpath=checkpoints_dir,
+            monitor="valid_CELoss",
+            mode="min",
+            save_top_k=self._configs['Model']['Trainer']['save_top_k'],
+            save_last='link',  # Added by ChangYuqi
+            enable_version_counter=False,  # Added by ChangYuqi
+        )
+        callbacks = [hist_cb]
+
+        return(callbacks)
+
+    def initialize_trainer(self, mode: str, model_dir: str) -> None:
         trainer_cfg = dict(
             accelerator=self._configs['Model']['Trainer']['accelerator'],
-            devices=None,
+            devices=self._configs['Model']['Trainer']['devices'],
             enable_checkpointing=False,
             precision=self._configs['Model']['Trainer']['precision'],
             logger=False,
         )
 
-
-        if train:
-            if self._configs['Model']['Trainer']['devices'] is None:
-                devices = "auto"
-            else:
-                devices = self._configs['Model']['Trainer']['devices']
+        if(mode=='train'):
+            devices = "auto" if(self._configs['Model']['Trainer']['devices'] is None) else self._configs['Model']['Trainer']['devices']
+            callbacks = self.configure_callbacks(model_dir=model_dir)
 
             # Configure loggers.
             loggers = []
-            output_dir = 'output_dir'
-            overwrite_ckpt_check = 'overwrite_ckpt_check'
-            if self._configs['Model']['Trainer']['log_metrics'] or self._configs['Model']['Trainer']['tb_summarywriter']:
-                if not output_dir:
-                    logger.warning(
-                        "Output directory not set in model runner. "
-                        "No loss file or Tensorboard will be created."
+
+            if self._configs['Model']['Trainer']['log_metrics']:
+                loggers.append(
+                    lightning.pytorch.loggers.CSVLogger(
+                        save_dir=model_dir, version=self.current_datetime, name="csv_logs"
                     )
-                else:
-                    csv_log_dir = "csv_logs"
-                    tb_log_dir = "tensorboard"
+                )
 
-                    '''
-                    if self._configs['Model']['Trainer']['log_metrics']:
-                        if overwrite_ckpt_check:
-                            utils.check_dir_file_exists(
-                                output_dir, csv_log_dir
-                            )
+            if self._configs['Model']['Trainer']['tb_summarywriter']:
+                loggers.append(
+                    lightning.pytorch.loggers.TensorBoardLogger(
+                        save_dir=model_dir, version=self.current_datetime, name="tensorboard"
+                    )
+                )
 
-                        loggers.append(
-                            lightning.pytorch.loggers.CSVLogger(
-                                output_dir, version=csv_log_dir, name=None
-                            )
-                        )
-
-                    if self._configs['Model']['Trainer']['tb_summarywriter']:
-                        if overwrite_ckpt_check:
-                            utils.check_dir_file_exists(
-                                output_dir, tb_log_dir
-                            )
-
-                        loggers.append(
-                            lightning.pytorch.loggers.TensorBoardLogger(
-                                output_dir, version=tb_log_dir, name=None
-                            )
-                        )
-
-                    if len(loggers) > 0:
-                        self.callbacks.append(
-                            LearningRateMonitor(
-                                log_momentum=True, log_weight_decay=True
-                            ),
-                        )
-                    '''
+            if len(loggers) > 0:
+                callbacks.append(
+                    LearningRateMonitor(
+                        log_momentum=True, log_weight_decay=True
+                    ),
+                )
 
             additional_cfg = dict(
                 devices=devices,
-                val_check_interval=self._configs['Model']['Trainer']['val_check_interval'],
-                max_epochs=self._configs['Model']['Trainer']['epoch'],
+                max_epochs=self._configs['Model']['Trainer']['max_epochs'],
                 num_sanity_val_steps=self._configs['Model']['Trainer']['num_sanity_val_steps'],
                 accumulate_grad_batches=self._configs['Model']['Trainer']['accumulate_grad_batches'],
                 gradient_clip_val=self._configs['Model']['Trainer']['gradient_clip_val'],
                 gradient_clip_algorithm=self._configs['Model']['Trainer']['gradient_clip_algorithm'],
-                #check_val_every_n_epoch=1,
-                check_val_every_n_epoch=None,
+                callbacks=callbacks,
+                check_val_every_n_epoch=self._configs['Model']['Trainer'].get('check_val_every_n_epoch', 1),
                 enable_checkpointing=True,
                 logger=loggers,
                 strategy=self._get_strategy(),
             )
 
-
             trainer_cfg.update(additional_cfg)
-            trainer_cfg['strategy']='ddp'
 
-
-            trainer_cfg_N = trainer_cfg.copy()
-            trainer_cfg_C = trainer_cfg.copy()
-
-            trainer_cfg_N['callbacks']=self.callbacks_N
-            trainer_cfg_C['callbacks']=self.callbacks_C
-
+            '''
             print('trainer_cfg',end=':')
             print(len(trainer_cfg))
-            pp.pprint(trainer_cfg)
+            pprint(trainer_cfg)
             print('-'*100)
-            print('trainer_cfg_C',end=':')
-            print(len(trainer_cfg_C))
-            pp.pprint(trainer_cfg_C)
+            '''
 
-            self.trainer_N = pl.Trainer(**trainer_cfg_N)
-            self.trainer_C = pl.Trainer(**trainer_cfg_C)
 
-    def initialize_model(self, mode=None, models_dir=None) -> None:
-        print(models_dir)
-        models_dir = os.path.normpath(models_dir)
+        trainer = pl.Trainer(**trainer_cfg)
 
-        models_dir_N = os.path.join(models_dir, 'ckpt_N')
-        models_dir_C = os.path.join(models_dir, 'ckpt_C')
+        return(trainer)
 
-        model_filename_N = os.path.join(models_dir_N, 'last.ckpt')
-        model_filename_C = os.path.join(models_dir_C, 'last.ckpt')
+    def initialize_models(self, mode=None, models_dir=None) -> None:
+        model_dir_N = os.path.join(models_dir, 'ckpt_N')
+        model_dir_C = os.path.join(models_dir, 'ckpt_C')
+        self._utils.make_dir(model_dir_N)
+        self._utils.make_dir(model_dir_C)
 
-        residues = self._meta.tokens
+        self.trainer_N = self.initialize_trainer(mode=mode, model_dir=model_dir_N)
+        self.trainer_C = self.initialize_trainer(mode=mode, model_dir=model_dir_C)
 
-        model_params = dict(
-            dim_model = self._configs["Model"]["Transformer"]['dim_model'],
-            n_head = self._configs["Model"]["Transformer"]['n_head'],
-            dim_feedforward = self._configs["Model"]["Transformer"]['dim_feedforward'],
-            n_layers = self._configs["Model"]["Transformer"]['n_layers'],
-            dropout = self._configs["Model"]["Transformer"]['dropout'],
-            #dim_intensity = self._configs["Model"]["Transformer"]['dim_intensity'],
-            #max_length = self._configs["Model"]["Transformer"]['max_length'],
-            #residues = residues,
-            max_charge = self._configs["Model"]["Transformer"]['max_charge'],
-            precursor_mass_tol = self._configs["Model"]["Transformer"]['precursor_mass_tol'],
+        self.Transformer_N = self.initialize_one_model(mode=mode, model_dir=model_dir_N)
+        self.Transformer_C = self.initialize_one_model(mode=mode, model_dir=model_dir_C)
 
-            isotope_error_range = tuple(self._configs['Model']['Transformer']['isotope_error_range']),
-
-            min_peptide_len = self._configs["Model"]["Transformer"]['min_peptide_len'],
-            n_beams = self._configs["Model"]["Transformer"]['n_beams'],
-            top_match = self._configs["Model"]["Transformer"]['top_match'],
-            n_log = self._configs["Model"]["Transformer"]['n_log'],
-            #tb_summarywriter =self._configs['Model']['Transformer']['tb_summarywriter'],
-            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
-            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
-            #max_iters=self._configs['Model']['Transformer']['max_iters'],
-            lr=self._configs['Model']['Trainer']['learning_rate'],
-            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
-            out_writer=self.writer,
-            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
-            tokenizer=None,
-            meta = self._meta
-        )
-
-        # Reconfigurable non-architecture related parameters for a loaded model
-        loaded_model_params = dict(
-            max_length = self._configs["Model"]["Transformer"]['max_length'],
-            precursor_mass_tol=self._configs['Model']['Transformer']['precursor_mass_tol'],
-            isotope_error_range=self._configs['Model']['Transformer']['isotope_error_range'],
-            n_beams=self._configs['Model']['Transformer']['n_beams'],
-            min_peptide_len=self._configs['Model']['Transformer']['min_peptide_len'],
-            top_match=self._configs['Model']['Transformer']['top_match'],
-            n_log=self._configs['Model']['Transformer']['n_log'],
-            tb_summarywriter=self._configs['Model']['Transformer']['tb_summarywriter'],
-            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
-            max_iters=self._configs['Model']['Transformer']['max_iters'],
-            lr=self._configs['Model']['Trainer']['learning_rate'],
-            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
-            out_writer=self.writer,
-            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
-            meta = self._meta
-        )
-
-        '''
+    def initialize_one_model(self, mode=None, model_dir=None) -> None:
         model_params = dict(
             precursor_mass_tol=self._configs["Model"]["Transformer"]['precursor_mass_tol'],
             isotope_error_range=tuple(self._configs['Model']['Transformer']['isotope_error_range']),
@@ -430,10 +377,9 @@ class MODEL:
             calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
             out_writer=self.writer,
             tokenizer=None,
+            meta=self._meta
         )
-        '''
 
-        '''
         loaded_model_params = dict(
             precursor_mass_tol=self._configs['Model']['Transformer']['precursor_mass_tol'],
             isotope_error_range=self._configs['Model']['Transformer']['isotope_error_range'],
@@ -449,61 +395,12 @@ class MODEL:
             train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
             calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
             out_writer=self.writer,
+            meta=self._meta
         )
-        '''
 
         if(mode=='train'):
-            if(not os.path.exists(models_dir_N)):
-                os.makedirs(models_dir_N)
-            if(not os.path.exists(models_dir_C)):
-                os.makedirs(models_dir_C)
-
-            prefix = f"{datetime.now().strftime('%Y%m%d_%H%M%S_')}"
-
-            curr_filename = prefix + "{epoch}-{step}"
-            best_filename = prefix + "best"
-            # Configure checkpoints.
-            self.callbacks_N = [
-                ModelCheckpoint(
-                    dirpath=models_dir_N,
-                    save_on_train_epoch_end=True,
-                    filename=curr_filename,
-                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                    save_last='link',  # Added by ChangYuqi
-                    enable_version_counter=False,
-                ),
-                ModelCheckpoint(
-                    dirpath=models_dir_N,
-                    monitor="valid_CELoss",
-                    filename=best_filename,
-                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                    save_last='link',  # Added by ChangYuqi
-                    enable_version_counter=False,
-                ),
-            ]
-
-            self.callbacks_C = [
-                ModelCheckpoint(
-                    dirpath=models_dir_C,
-                    save_on_train_epoch_end=True,
-                    filename=curr_filename,
-                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                    save_last='link',  # Added by ChangYuqi
-                    enable_version_counter=False,
-                ),
-                ModelCheckpoint(
-                    dirpath=models_dir_C,
-                    monitor="valid_CELoss",
-                    filename=best_filename,
-                    #mode="min",
-                    save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-                    save_last='link',  # Added by ChangYuqi
-                    enable_version_counter=False,
-                ),
-            ]
-            self.initialize_trainer(train=True)
-            self.Transformer_N = Transformer(**model_params)
-            self.Transformer_C = Transformer(**model_params)
+            Transformer_model = Transformer(**model_params)
+            return(Transformer_model)
 
         elif(mode=='predict'):
             if(not os.path.exists(model_filename_N) or not os.path.exists(model_filename_C)):
@@ -565,7 +462,6 @@ class MODEL:
                     )
         else:
             sys.exit(0)
-
 
     def _get_strategy(self) -> Union[str, DDPStrategy]:
         """Get the strategy for the Trainer.

@@ -52,12 +52,13 @@ def main():
     predict.add_argument('input', type=str, default=None, help="Name of the spec file for prediction")
 
     args = parser.parse_args()
-    print('args:')
-    pp.pprint(args)
+    #print('args:')
+    #pp.pprint(args)
 
     configs = read_configs(args.config)
     meta = META(configs)
     model = MODEL(meta, configs)
+
     if(args.command == 'mgfconvert'):
         mgf_converter = MGFConverter(meta, args.informat, args.outformat)
         #mgf_converter.index_mgf(args.input, args.xml)
@@ -69,8 +70,8 @@ def main():
             PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveMGF_to_PointNovo(args.input)
         elif (args.informat=='MassIVE_KB' and args.outformat == 'PrimeNovo'):
             PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(args.input,False)
-        elif(args.informat=='MassIVE_KB' and args.outformat=='spec'):
-            spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input)
+        elif(args.informat=='MassIVE_KB' and args.outformat=='PepGo'):
+            spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input, preprocess=True)
             mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat=='9species' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, spec_file=args.output)
@@ -92,12 +93,12 @@ def main():
         elif(args.type=='msp'):
             spec.convert_msp_to_spec(args.input)
     elif(args.command == "train"):
-        model.initialize_model(mode='train', models_dir=args.Transformers)
+        model.initialize_models(mode='train', models_dir=args.Transformers)
         ext = os.path.splitext(args.train)[1]
         model.train(train_spec=args.train, valid_spec=args.valid, mode=ext)
     elif(args.command == "predict"):
         start=time.time()
-        model.initialize_model(mode='predict', models_dir=args.Transformers)
+        model.initialize_model(mode='predict', model_dir=args.Transformers)
         model.predict(args.input)
         end=time.time()
         print('Total_time_consumed in prediction:',end=':')

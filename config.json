@@ -8,6 +8,15 @@
 			"max_charges":10,
 			"max_peaks":300
 		},
+		"Spectrum": {
+			"min_mz":50.0,
+			"max_mz":2500.0,
+			"min_peaks":20,
+        	"max_peaks":150,
+			"min_intensity":0.01,
+			"max_charge": 10,
+			"remove_precursor_tol": 2.0
+		},
 		"Data":{
 			"replace_isoleucine_and_leucine_with_X":true,
 			"replace_isoleucine_with_leucine":true,
@@ -56,25 +65,26 @@
 		},
 		"Trainer":{
 			"accelerator": "auto",
+			"devices": "auto",
 			"precision": "32-true",
-			"devices": null,
 			"accumulate_grad_batches": 1,
 			"gradient_clip_val": null,
 			"gradient_clip_algorithm": null,
-			"val_check_interval": 50000,
-			"log_metrics": false,
-			"tb_summarywriter": false,
+			"log_metrics": true,
+			"tb_summarywriter": true,
+			"allow_overwrite_ckpt_check": true,
 			"save_top_k":-1,
 			"learning_rate": 5e-4,
 			"weight_decay": 1e-5,
 			"num_sanity_val_steps":0,
 			"num_workers":20,
-			"epoch":30,
+			"max_epochs":3,
 			"batch_sz":50,
 			"log_every_n_steps":10,
-			"train_batch_size":16,
-			"valid_batch_size":16,
-			"test_batch_size":8
+			"train_batch_size":2,
+			"valid_batch_size":2,
+			"test_batch_size":2,
+			"check_val_every_n_epoch": 1
 		}
 	},
 	"MCTTS":{

@@ -7,17 +7,16 @@ MISSING = object()  # 占位：没找到
 MAX_DEPTH = 10  # 防止无限递归
 BUILTIN_SCALAR = {str, int, float, bool, type(None), bytes, complex}
 
-# parse_class.py
-import inspect
-import re
+import os
+
 from collections import OrderedDict
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import inspect
 import numpy as np
 import torch
 import pprint as pp
-
+import pathlib
 
 class UTILS:
     def __init__(self):
@@ -48,8 +47,6 @@ class UTILS:
         print(type(var))
 
         pp.pprint(var)
-
-
 
     # ------------- 小工具 -------------
     def _signature(self, f) -> str:
@@ -156,7 +153,6 @@ class UTILS:
         else:
             print("Source not available (maybe from extension or REPL).")
 
-
     def _is_scalar(self, obj):
         return type(obj) in BUILTIN_SCALAR or isinstance(obj, (decimal.Decimal, datetime.date, uuid.UUID))
 
@@ -238,11 +234,46 @@ class UTILS:
         data['<type>'] = name
         return data
 
-    # ------------------------------------------------
-    # 用户只需要这一行
     def parse_instance(self, obj: typing.Any, *, to_json: bool = True) -> typing.Any:
         tree = self._serialize(obj)
         dump_info = json.dumps(tree, ensure_ascii=False, indent=2) if to_json else tree
         pp.pprint(dump_info)
         print('-'*100)
         return(dump_info)
+
+    def check_dir_file_exists(self, dir: pathlib.Path, file_patterns: Iterable[str] | str) -> None:
+        """
+        Check that no file names in dir match any of file_patterns
+
+        Parameters
+        ----------
+        dir : pathlib.Path
+            The directory to check for matching file names
+        file_patterns : Iterable[str] | str
+            UNIX style wildcard pattern(s) to test file names against
+
+        Raises
+        ------
+        FileExistsError
+            If matching file name is found in dir
+        """
+        if isinstance(file_patterns, str):
+            file_patterns = [file_patterns]
+
+        for pattern in file_patterns:
+            if next(dir.glob(pattern), None) is not None:
+                raise FileExistsError(
+                    f"File matching wildcard pattern {pattern} already exist in "
+                    f"{dir} and can not be overwritten."
+                )
+
+    def make_dir(self, dir):
+        try:
+            os.makedirs(dir, exist_ok=True)
+        except FileExistsError:
+            # 目录已存在，检查是否真的是目录
+            if not os.path.isdir(dir):
+                raise NotADirectoryError(f"路径存在但不是目录: {model_dir}")
+            # 如果是目录，继续执行
+        except Exception as e:
+            raise RuntimeError(f"创建目录失败: {dir}, 错误: {e}")

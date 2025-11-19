@@ -1,5 +1,5 @@
+import os
 import sys
-import warnings
 
 import numpy as np
 import pprint as pp
@@ -31,6 +31,13 @@ from .utils import UTILS
 
 torch.set_float32_matmul_precision('medium')   # <= 这里
 
+import warnings
+# 过滤嵌套张量相关的警告
+warnings.filterwarnings("ignore", message=".*nested tensors.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*prototype stage.*", category=UserWarning)
+# 可选：设置环境变量
+os.environ['PYTORCH_JIT'] = '0'
+print("✅ 已禁用嵌套张量警告")
 
 class SpectrumEncoder(SpectrumTransformerEncoder):
     """
@@ -334,7 +341,6 @@ class Transformer(pl.LightningModule):
             train_label_smoothing: float = 0.01,
             warmup_iters: int = 100_000,
             cosine_schedule_period_iters: int = 600_000,
-            #out_writer: Optional[ms_io.MztabWriter] = None,
             out_writer = None,
             calculate_precision: bool = False,
             tokenizer: PeptideTokenizer | None = None,
@@ -415,8 +421,8 @@ class Transformer(pl.LightningModule):
         self.n_log = n_log
         self._history = []
 
-        # Output writer during predicting.
-        self.out_writer = out_writer
+        #print('self.calculate_precision',end=':')
+        #print(self.calculate_precision)
 
     @property
     def device(self) -> torch.device:
@@ -474,9 +480,14 @@ class Transformer(pl.LightningModule):
             score, the amino acid scores, and the predicted peptide
             sequence.
         """
+        _, _, peptides = batch
         mzs, ints, precursors, tokens = self._process_batch(batch)
+        #return self.beam_search_decode(mzs, ints, precursors)
 
-        return self.beam_search_decode(mzs, ints, precursors)
+        memories, mem_masks = self.encoder(mzs, ints)
+        return(memories, mem_masks, precursors, peptides)
+
+
 
 ###---------------------------------------------OLD START-----------------------------------------------------------
     def _get_top_peptide(
@@ -896,148 +907,11 @@ class Transformer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], *args) -> torch.Tensor:
-        '''
-        #print('')
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        spectra, precursors, peptides = batch
-
-        peptides_true = [','.join(i) for i in peptides]
-
         # Record the loss.
         loss = self.training_step(batch, mode="valid")
-        if not self.calculate_precision:
-            return loss
-
-        # Calculate and log amino acid and peptide match evaluation metrics from the predicted peptides.
-        peptides_pred = self.beam_pred(spectra, precursors)
-        aa_precision, aa_recall, pep_precision = self.evaluate(peptides_true, peptides_pred)
-
-        log_args = dict(on_step=False, on_epoch=True, sync_dist=True)
-        self.log(
-            "Peptide precision at coverage=1",
-            pep_precision,
-            **log_args,
-        )
-        self.log(
-            "AA precision at coverage=1",
-            aa_precision,
-            **log_args,
-        )
-
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(loss)
-        '''
-
-        """
-        A single validation step.
-
-        Parameters
-        ----------
-        batch : Dict[str, torch.Tensor]
-            A batch from the SpectrumDataset, which contains keys:
-            A batch from the SpectrumDataset, which contains keys:
-            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
-            ``precursor_charge``, each pointing to tensors with the
-            corresponding data. The ``seq`` key is optional and
-            contains the peptide sequences for training.
-
-        Returns
-        -------
-        torch.Tensor
-            The loss of the validation step.
-        """
-        # Record the loss.
-        loss = self.training_step(batch, mode="valid")
-        if not self.calculate_precision:
-            return loss
-
-        # Calculate and log amino acid and peptide match evaluation
-        # metrics from the predicted peptides.
-        # FIXME: Remove work around when depthcharge reverse detokenization
-        # bug is fixed.
-        # peptides_true = self.tokenizer.detokenize(batch["seq"])
-        peptides_true = [
-            "".join(pep)
-            for pep in self.tokenizer.detokenize(batch["seq"], join=False)
-        ]
-        peptides_pred = [
-            pred
-            for spectrum_preds in self.forward(batch)
-            for _, _, pred in spectrum_preds
-        ]
-        aa_precision, _, pep_precision = evaluate.aa_match_metrics(
-            *evaluate.aa_match_batch(
-                peptides_true, peptides_pred, self.tokenizer.residues
-            )
-        )
-
-        batch_size = len(peptides_true)
-        log_args = dict(on_step=False, on_epoch=True, sync_dist=True)
-        self.log(
-            "pep_precision", pep_precision, **log_args, batch_size=batch_size
-        )
-        self.log(
-            "aa_precision", aa_precision, **log_args, batch_size=batch_size
-        )
-        return loss
-
-    '''
-    def predict_step(self, batch: Dict[str, torch.Tensor], *args) -> List[ms_io.PepSpecMatch]:
-            #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        #spectra, precursors, peptides = batch
-        #peptides_pred = self.beam_pred(spectra, precursors)
-
-        #outputs=[peptides_pred, peptides]
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-        #return(outputs)
-
-        """
-        A single prediction step.
-
-        Parameters
-        ----------
-        batch : Dict[str, torch.Tensor]
-            A batch from the SpectrumDataset, which contains keys:
-            ``mz_array``, ``intensity_array``, ``precursor_mz``, and
-            ``precursor_charge``, each pointing to tensors with the
-            corresponding data. The ``seq`` key is optional and
-            contains the peptide sequences for training.
-
-        Returns
-        -------
-        predictions: List[psm.PepSpecMatch]
-            Predicted PSMs for the given batch of spectra.
-        """
-        predictions = []
-        for (
-            filename,
-            scan,
-            precursor_charge,
-            precursor_mz,
-            spectrum_preds,
-        ) in zip(
-            batch["peak_file"],
-            batch["scan_id"],
-            batch["precursor_charge"],
-            batch["precursor_mz"],
-            self.forward(batch),
-        ):
-            for peptide_score, aa_scores, peptide in spectrum_preds:
-                predictions.append(
-                    psm.PepSpecMatch(
-                        sequence=peptide,
-                        spectrum_id=(filename, scan),
-                        peptide_score=peptide_score,
-                        charge=int(precursor_charge),
-                        calc_mz=np.nan,
-                        exp_mz=precursor_mz.item(),
-                        aa_scores=aa_scores,
-                    )
-                )
-
-        return predictions
-    '''
 
     def on_train_epoch_end(self) -> None:
         """
@@ -1073,52 +947,22 @@ class Transformer(pl.LightningModule):
         self._history.append(metrics)
         self._log_history()
 
-    '''
-    def on_predict_batch_end(self, outputs: List[psm.PepSpecMatch], *args) -> None:
-        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        #predictions, peptides = outputs
-
-        #for i in range(len(peptides)):
-        #    print(str(predictions[i])+'\n'+','.join(peptides[i])+'\n')
-
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-    
-        """
-        Write the predicted PSMs to the output file.
-
-        Parameters
-        ----------
-        outputs : List[psm.PepSpecMatch]
-            The predicted PSMs for the processed batch.
-        """
-        if self.out_writer is None:
-            return
-
-        for spec_match in outputs:
-            if not spec_match.sequence:
-                continue
-
-            # N terminal scores should be combined with first token
-            if len(spec_match.aa_scores) >= 2 and any(
-                spec_match.sequence.startswith(mod) for mod in self.n_term
-            ):
-                spec_match.aa_scores[1] *= spec_match.aa_scores[0]
-                spec_match.aa_scores = spec_match.aa_scores[1:]
-
-            # Compute the precursor m/z of the predicted peptide.
-            spec_match.calc_mz = self.tokenizer.calculate_precursor_ions(
-                spec_match.sequence, torch.tensor(spec_match.charge)
-            ).item()
-
-            self.out_writer.psms.append(spec_match)
-    '''
-
     def on_train_start(self):
         """Log optimizer settings."""
-        self.log("hp/optimizer_warmup_iters", self.warmup_iters)
+        self.log(
+            "hp/optimizer_warmup_iters",
+             self.warmup_iters,
+             on_epoch=True,
+             sync_dist=True,
+             reduce_fx="mean"
+        )
+
         self.log(
             "hp/optimizer_cosine_schedule_period_iters",
             self.cosine_schedule_period_iters,
+            on_epoch=True,
+            sync_dist=True,
+            reduce_fx="mean"
         )
 
     def _log_history(self) -> None:

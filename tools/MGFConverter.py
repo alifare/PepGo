@@ -514,7 +514,7 @@ class MGFConverter(object):
 
         return(spec_file)
 
-    def convert_MassiveKBmgf_to_PepGo(self, mgf_file, spec_file=None, dryrun=False):
+    def convert_MassiveKBmgf_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):
             spec_file=mgf_file+'.spec'
         if(dryrun):
@@ -525,6 +525,13 @@ class MGFConverter(object):
 
         with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
             for spectrum in reader:
+                mz_array = spectrum['m/z array']                 # numpy.ndarray
+                it_array = spectrum['intensity array']           # numpy.ndarray
+                assert len(mz_array) == len(it_array), 'Length of mz array and intensity array mismatch!'
+                if(preprocess):
+                    spectrum = self._meta.preprocess_spectrum(spectrum)
+                print(spectrum)
+                sys.exit()
                 #scan = spectrum['params']['scan'] or None
                 scan = spectrum['params'].get('scan', None)
                 if(scan==None):
@@ -537,12 +544,6 @@ class MGFConverter(object):
 
                 seq = spectrum['params']['seq']
                 tokenized_seq = self.split_with_regex(seq)
-
-                mz_array = spectrum['m/z array']                 # numpy.ndarray
-                it_array = spectrum['intensity array']           # numpy.ndarray
-
-                if(len(mz_array)!=len(it_array)):
-                    sys.exit('Length of mz array and intensity array mismatch')
 
                 peaks=[]
                 for mz, it in zip(mz_array, it_array):
