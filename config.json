@@ -17,7 +17,8 @@
 			"max_charge": 10,
 			"remove_precursor_tol": 2.0
 		},
-		"Data":{
+		"Peptide": {
+			"allowed_max_ptm_on_one_residue": 1,
 			"replace_isoleucine_and_leucine_with_X":true,
 			"replace_isoleucine_with_leucine":true,
 			"_replace_isoleucine_with_leucine":false
@@ -77,13 +78,13 @@
 			"learning_rate": 5e-4,
 			"weight_decay": 1e-5,
 			"num_sanity_val_steps":0,
-			"num_workers":20,
-			"max_epochs":3,
+			"num_workers":2,
+			"max_epochs":60,
 			"batch_sz":50,
 			"log_every_n_steps":10,
-			"train_batch_size":2,
-			"valid_batch_size":2,
-			"test_batch_size":2,
+			"train_batch_size":256,
+			"valid_batch_size":256,
+			"test_batch_size":128,
 			"check_val_every_n_epoch": 1
 		}
 	},

@@ -10,15 +10,6 @@ from typing import Dict, Iterable, Optional, Union
 
 from spectrum_utils import fragment_annotation as fa, proforma, utils
 
-'''
-from depthcharge.data import (
-    AnnotatedSpectrumDataset,
-    CustomField,
-    SpectrumDataset,
-    preprocessing,
-)
-'''
-
 class META:
     def __init__(self, configs):
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -299,6 +290,8 @@ class META:
         mass_dict = dict()
         mass_dict.update(tokens)
         mass_dict.update(special_tokens)
+        mass_dict['<'] = mass_dict['N-term']
+        mass_dict['>'] = mass_dict['C-term']
 
         return(tokens, special_tokens, mass_dict)
 
@@ -333,8 +326,6 @@ class META:
     def preprocess_spectrum(self, spectrum):
         # Spectrum preprocessing functions.
         self.spectrum = spectrum
-        #self._utils.parse_var(self.spectrum['m/z array'])
-        #self._utils.parse_var(self.spectrum['intensity array'])
         self.set_mz_range(min_mz=self._min_mz, max_mz=self._max_mz)
         self.remove_precursor_peak(fragment_tol_mass=self._remove_precursor_tol, fragment_tol_mode='Da')
         self.scale_intensity(scaling='root', max_intensity=1)

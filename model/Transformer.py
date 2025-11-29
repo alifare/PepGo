@@ -219,6 +219,22 @@ class PeptideTokenizer(PeptideTokenizer):
 
         return decoded
 
+    def detokenize_residue(self, idx):
+        #print('self.index',end=':')
+        #print(len(self.index))
+        #print(type(self.index))
+        #pp.pprint(self.index)
+
+        #print('self.reverse_index',end=':')
+        #print(len(self.reverse_index))
+        #print(type(self.reverse_index))
+
+        #for i in range(len(self.reverse_index)):
+        #    print(str(self.reverse_index[i])+':'+str(i), end='\t')
+
+        residue = self.reverse_index[idx]
+        return(residue)
+
 class PeptideDecoder(AnalyteTransformerDecoder):
     """
     A transformer decoder for peptide sequences.
@@ -330,7 +346,6 @@ class Transformer(pl.LightningModule):
             n_layers: int = 9,
             dropout: float = 0.0,
             max_peptide_len: int = 100,
-            residues: str | Dict[str, float] = "canonical",
             max_charge: int = 5,
             precursor_mass_tol: float = 50,
             isotope_error_range: Tuple[int, int] = (0, 1),
@@ -342,7 +357,6 @@ class Transformer(pl.LightningModule):
             warmup_iters: int = 100_000,
             cosine_schedule_period_iters: int = 600_000,
             out_writer = None,
-            calculate_precision: bool = False,
             tokenizer: PeptideTokenizer | None = None,
             meta=None,
             **kwargs: Dict,
@@ -353,10 +367,20 @@ class Transformer(pl.LightningModule):
         self._meta = meta
         self._proton = self._meta.proton
         self._mass_dict = self._meta.mass_dict
+        self.residues = self._meta.tokens
+
         self._utils = UTILS()
+        #print('self._meta.tokens',end=':')
+        #print(len(self._meta.tokens))
+        #print(self._meta.tokens)
 
         self.tokenizer = tokenizer or PeptideTokenizer(residues=self._meta.tokens, start_token=None, stop_token="$")
         self.vocab_size = len(self.tokenizer) + 1
+
+        #print('len(self.tokenizer)',end=':')
+        #print(len(self.tokenizer))
+        #print(self.tokenizer.index)
+
 
         # Build the model.
         self.encoder = SpectrumEncoder(
@@ -375,6 +399,7 @@ class Transformer(pl.LightningModule):
             dropout=dropout,
             max_charge=max_charge,
         )
+
 
         self.softmax = torch.nn.Softmax(2)
         ignore_index = 0
@@ -417,12 +442,8 @@ class Transformer(pl.LightningModule):
         self.stop_token = self.tokenizer.stop_int
 
         # Logging.
-        self.calculate_precision = calculate_precision
         self.n_log = n_log
         self._history = []
-
-        #print('self.calculate_precision',end=':')
-        #print(self.calculate_precision)
 
     @property
     def device(self) -> torch.device:
@@ -436,30 +457,8 @@ class Transformer(pl.LightningModule):
         """
         return next(self.parameters()).device
 
-    '''
-    # def forward(self, peptides, precursors, memory, memory_key_padding_mask, partial=False):
     def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
-        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' started ' + '+' * 100)
-        # self._utils.parse_var(batch)
-        mzs, intensities, precursors, seqs = self._process_batch(batch)
-        # print(seqs)
-
-        print('\nmzs:')
-        print(mzs.shape)
-        pp.pprint(mzs)
-
-        print('\nintensities:')
-        print(intensities.shape)
-        pp.pprint(intensities)
-
-        print('\nseqs:')
-        # print(seqs.shape)
-        pp.pprint(seqs)
-        sys.exit()
-        print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
-        return (True)
-    '''
-    def forward(self, batch: Dict[str, torch.Tensor]) -> List[List[Tuple[float, np.ndarray, str]]]:
+        #print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' started ' + '+' * 100)
         """
         Predict peptide sequences for a batch of MS/MS spectra.
 
@@ -483,11 +482,11 @@ class Transformer(pl.LightningModule):
         _, _, peptides = batch
         mzs, ints, precursors, tokens = self._process_batch(batch)
         #return self.beam_search_decode(mzs, ints, precursors)
-
         memories, mem_masks = self.encoder(mzs, ints)
+        #self._utils.parse_var(memories)
+
+        #print(self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
         return(memories, mem_masks, precursors, peptides)
-
-
 
 ###---------------------------------------------OLD START-----------------------------------------------------------
     def _get_top_peptide(
@@ -937,13 +936,11 @@ class Transformer(pl.LightningModule):
             "valid": callback_metrics["valid_CELoss"].detach().item(),
         }
 
-        if self.calculate_precision:
-            metrics["valid_aa_precision"] = (
-                callback_metrics["aa_precision"].detach().item()
-            )
-            metrics["valid_pep_precision"] = (
-                callback_metrics["pep_precision"].detach().item()
-            )
+        #print('callback_metrics',end=':')
+        #print(callback_metrics)
+        #print('self.trainer.current_epoch',end=':')
+        #print(self.trainer.current_epoch)
+
         self._history.append(metrics)
         self._log_history()
 
@@ -974,9 +971,6 @@ class Transformer(pl.LightningModule):
             return
         if len(self._history) == 1:
             header = "Step\tTrain loss\tValid loss\t"
-            if self.calculate_precision:
-                header += "Peptide precision\tAA precision"
-
             logger.info(header)
         metrics = self._history[-1]
         if metrics["step"] % self.n_log == 0:
@@ -986,13 +980,6 @@ class Transformer(pl.LightningModule):
                 metrics.get("train", np.nan),
                 metrics.get("valid", np.nan),
             ]
-
-            if self.calculate_precision:
-                msg += "\t%.6f\t%.6f"
-                vals += [
-                    metrics.get("valid_pep_precision", np.nan),
-                    metrics.get("valid_aa_precision", np.nan),
-                ]
 
             logger.info(msg, *vals)
 

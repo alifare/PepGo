@@ -340,16 +340,18 @@ class Monte_Carlo_Double_Root_Tree:
         return(branches_arr)
 
     def plant_perfect_tree(self, precursor, root, tail_mass, model, memories, mem_masks, mode, delta):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #mode=0 Transformer mode
         #mode=1 Spectrum Probes mode
+        #self._utils.parse_var(precursor)
 
         root_residue_list = root.residue.split(',')
         root_residue_list_nohead = root_residue_list[1:]
-
         root_residue_list_key = '_'.join(root_residue_list)
 
         #self._utils.parse_var(root_residue_list)
+        self._utils.parse_var(root_residue_list_nohead)
+        #self._utils.parse_var(root_residue_list_key)
         #self._utils.parse_var(self.branches_arr, 'self.branches_arr')
         
         perfect_tree = dict()
@@ -359,52 +361,101 @@ class Monte_Carlo_Double_Root_Tree:
 
         if(mode==0):
             for i in range(len(self.branches_arr)-1):
+                print('loop:'+str(i))
+                #self._utils.parse_var()
                 branches_dict = self.branches_arr[i]
                 branches_keys = list(branches_dict.keys())
                 branches_values = list(branches_dict.values())
-    
+
+                self._utils.parse_var(branches_dict)
+                self._utils.parse_var(branches_keys)
+                self._utils.parse_var(branches_values)
+                print('='*100)
+
                 branches = []
                 for e in branches_values:
                     e= root_residue_list_nohead + e
                     if(len(e)>=self._pep_len):
                         sys.exit('len(e)>=self._pep_len:'+len(e))
                     branches.append(e)
-    
+
+                #self._utils.parse_var(self._pep_len)
+
                 for i, key in enumerate(branches_keys):
                     key = key.replace('root', root_residue_list_key)
                     for residue in model.residues.keys():
                         key_j = key +'_'+ residue
                         perfect_tree[key_j] = [None, None, None, None, None, 0.0]
                         #[Transformer reward, Docking reward, Transformer beam delta, Docking beam delta, Bisect delta, 0 delta]
+
                 #self._utils.parse_var(perfect_tree, 'A')
-    
+
                 repeat_n = len(branches)
+                batch_size = precursor.shape[0]
+
                 if(i==0 and (root.residue == '<' or root.residue == '>')): #First prediction
-                    branches=None
+                    branches=torch.zeros(batch_size, 0, dtype=torch.int64, device=model.decoder.device)
                     repeat_n=1
-    
+                    self._utils.parse_var(branches, 'A')
+                else:
+                    self._utils.parse_var(branches, 'B')
+                    branches = model.tokenizer.tokenize(branches)
+                    branches = branches.to(model.decoder.device)
+                    self._utils.parse_var(branches, 'C')
+
+                    #sys.exit('i=='+str(i))
+
                 precursors_n = einops.repeat(precursor, "B L -> (B S) L", S=repeat_n)
                 memories_n = einops.repeat(memories,  "B L V -> (S B) L V", S=repeat_n)
-                masks_n = einops.repeat(mem_masks, "B L -> (S B) L", S=repeat_n)
+                mem_masks_n = einops.repeat(mem_masks, "B L -> (S B) L", S=repeat_n)
     
                 precursors_n = precursors_n.to(model.decoder.device)
                 memories_n = memories_n.to(model.decoder.device)
-                masks_n = masks_n.to(model.decoder.device)
-    
-                (logits, tokens) = model.decoder(branches, precursors_n, memories_n, masks_n, partial=True)
-    
+                mem_masks_n = mem_masks_n.to(model.decoder.device)
+
+                self._utils.parse_var(branches, 'D')
+                #print(memories_n.shape)
+                #print(mem_masks_n.shape)
+                #print(precursors_n.shape)
+
+
+                #(logits, tokens) = model.decoder(
+                logits = model.decoder(
+                    tokens=branches,
+                    memory=memories_n,
+                    memory_key_padding_mask=mem_masks_n,
+                    precursors=precursors_n
+                )
+                print('i==' + str(i))
+                self._utils.parse_var(branches, 'E')
+
+                self._utils.parse_var(logits)
+                #self._utils.parse_var(perfect_tree, 'B')
+
+                #(logits, tokens) = model.decoder(branches, precursors_n, memories_n, mem_masks_n, partial=True)
+
                 last_logits = logits[:, -1, :]
                 last_probs = torch.softmax(last_logits, dim=-1)
                 last_prob_arr = last_probs.detach().cpu().numpy()
-    
+                #print('last_prob_arr.shape',end=':')
+                #print(last_prob_arr.shape)
+
                 for i, key in enumerate(branches_keys):
                     key = key.replace('root', root_residue_list_key)
-                    for j in range(1, last_prob_arr.shape[-1]-1):
-                        residue = model.decoder.detokenize_residue(j)
+                    #for j in range(1, last_prob_arr.shape[-1]-1):
+                    for j in range(2, last_prob_arr.shape[-1]):
+                        #print('j',end=':')
+                        #print(j)
+                        residue = model.tokenizer.detokenize_residue(j)
+                        #print('')
+                        #print('residue',end=':')
+                        #print(residue)
                         key_j = key +'_'+ residue
                         perfect_tree[key_j][0] = last_prob_arr[i][j] #Transformer reward(probability)
-                
-                #self._utils.parse_var(perfect_tree, 'B')
+                        #print('prob',end=':')
+                        #print(perfect_tree[key_j][0])
+                        #print('='*100)
+                self._utils.parse_var(perfect_tree, 'C')
     
             #Beam search to get delta
             if(self.transformer_beam_search_delta and (delta == -4)):
@@ -435,14 +486,14 @@ class Monte_Carlo_Double_Root_Tree:
     
                 # Get the first prediction.
                 precursors_n = einops.repeat(precursor, "N I -> (N B) I", B=batch)
-                masks_n = einops.repeat(mem_masks, "N I -> (N B) I", B=batch)
+                mem_masks_n = einops.repeat(mem_masks, "N I -> (N B) I", B=batch)
                 memories_n = einops.repeat(memories,  "N I E -> (N B) I E", B=batch)
     
                 precursors_n = precursors_n.to(model.decoder.device)
                 memories_n = memories_n.to(model.decoder.device)
-                masks_n = masks_n.to(model.decoder.device)
+                mem_masks_n = mem_masks_n.to(model.decoder.device)
     
-                (pred, return_tokens) = model.decoder(leaves, precursors_n, memories_n, masks_n, partial=True)
+                (pred, return_tokens) = model.decoder(leaves, precursors_n, memories_n, mem_masks_n, partial=True)
     
                 return_tokens = einops.repeat(return_tokens, "B L -> B L S", S=beam)
     
@@ -458,7 +509,7 @@ class Monte_Carlo_Double_Root_Tree:
     
                 # Make all tensors the right shape for decoding.
                 precursors_n = einops.repeat(precursors_n, "B L -> (B S) L", S=beam)
-                masks_n = einops.repeat(masks_n, "B L -> (B S) L", S=beam)
+                mem_masks_n = einops.repeat(mem_masks_n, "B L -> (B S) L", S=beam)
                 memories_n = einops.repeat(memories_n, "B L V -> (B S) L V", S=beam)
     
                 tokens = einops.rearrange(tokens, "B L S -> (B S) L")
@@ -495,7 +546,7 @@ class Monte_Carlo_Double_Root_Tree:
                         tokens[~finished_beams, : step + 1],
                         precursors_n[~finished_beams, :],
                         memories_n[~finished_beams, :, :],
-                        masks_n[~finished_beams, :],
+                        mem_masks_n[~finished_beams, :],
                     )
     
                     scores[:, :subpeplen-1, :] = torch.nan
@@ -520,7 +571,7 @@ class Monte_Carlo_Double_Root_Tree:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(perfect_tree)
         
     def parse_subtree(self, tree=None):
@@ -966,7 +1017,7 @@ class Monte_Carlo_Double_Root_Tree:
     '''
 
     def give_birth_to_Transformer(self, precursor, total_mass, N_root, N_memory, N_mem_mask, C_root, C_memory, C_mem_mask, mode, delta):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         
         N_tail_mass = total_mass - self._mass_dict['<'] - C_root.mass
         C_tail_mass = total_mass - self._mass_dict['>'] - N_root.mass
@@ -1027,6 +1078,7 @@ class Monte_Carlo_Double_Root_Tree:
 
         N_bestchild = self.BESTCHILD(node=N_root, scalar=0.0, most=False)
         C_bestchild = self.BESTCHILD(node=C_root, scalar=0.0, most=False)
+        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(N_bestchild, C_bestchild)
 
     #def UCTSEARCH_Transformer(self, N_memory, N_mem_mask, C_memory, C_mem_mask, precursor, peptide, mode=0, delta=-1):
@@ -1049,13 +1101,18 @@ class Monte_Carlo_Double_Root_Tree:
         p = precursor[0].tolist()
         total_mass = p[0]
 
+
         #peptide
         true_peptide = self.get_peptide_true(peptide[0])
+        #self._utils.parse_var(self._mass_dict)
+        #self._utils.parse_var(self._meta.tokens)
 
         N_root = myNode(residue='<', mass=self._mass_dict['<'], layer = self._depth_Transformer)
         C_root = myNode(residue='>', mass=self._mass_dict['>'], layer = self._depth_Transformer)
 
         remaining_mass = total_mass - N_root.mass - C_root.mass - self._proton
+
+        #self._utils.parse_var(remaining_mass)
 
         while(remaining_mass > 0.0):
             N_bestchild, C_bestchild = self.give_birth_to_Transformer(

@@ -63,7 +63,8 @@ def main():
         mgf_converter = MGFConverter(meta, args.informat, args.outformat)
         #mgf_converter.index_mgf(args.input, args.xml)
         #mgf_converter.extract_ptms(args.input, 'tmp.ptm')
-        mgf_converter.readin_mass_ptm_dicts(args.ptm)
+        if(args.ptm is not None):
+            mgf_converter.readin_mass_ptm_dicts(args.ptm)
         if(args.informat=='MassIVE_KB' and args.outformat=='CasanovoMGF'):
             casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input)
         elif(args.informat=='MassIVE_KB' and args.outformat=='PointNovo'):
@@ -72,10 +73,12 @@ def main():
             PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(args.input,False)
         elif(args.informat=='MassIVE_KB' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input, preprocess=True)
-            mgf_converter.convert_spec_to_h5(spec_file)
+            #mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat=='9species' and args.outformat=='PepGo'):
-            spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, spec_file=args.output)
+            spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, preprocess=True, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
+        elif (args.informat == 'PepGo' and args.outformat == 'H5'):
+            mgf_converter.convert_spec_to_h5(args.input)
         else:
             raise ValueError('Nothing converted')
         '''
@@ -94,11 +97,10 @@ def main():
             spec.convert_msp_to_spec(args.input)
     elif(args.command == "train"):
         model.initialize_models(mode='train', models_dir=args.Transformers)
-        ext = os.path.splitext(args.train)[1]
-        model.train(train_spec=args.train, valid_spec=args.valid, mode=ext)
+        model.train(train_spec=args.train, valid_spec=args.valid)
     elif(args.command == "predict"):
         start=time.time()
-        model.initialize_model(mode='predict', model_dir=args.Transformers)
+        model.initialize_models(mode='predict', models_dir=args.Transformers)
         model.predict(args.input)
         end=time.time()
         print('Total_time_consumed in prediction:',end=':')

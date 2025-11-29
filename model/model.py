@@ -16,6 +16,10 @@ from typing import Union
 import torch
 import torch.multiprocessing as mp
 from torch.multiprocessing import Process, Manager, Pool
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import lightning
 import lightning.pytorch as pl
@@ -28,6 +32,9 @@ from .utils import UTILS
 from .HDF import HDF
 from pprint import pprint
 
+from pathlib import Path
+import copy
+
 import logging
 logger = logging.getLogger("PepGo")
 
@@ -39,6 +46,60 @@ warnings.filterwarnings(
     module="lightning.pytorch.callbacks.model_checkpoint"
 )
 print("✅ 已禁用Checkpoint路径已存在警告")
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+class GPUWorker:
+    def __init__(self, meta, configs, gpu_idx, model_N, model_C):
+        self.gpu_idx = gpu_idx
+        self.num_gpus = torch.cuda.device_count()
+        self.device = torch.device(f'cuda:{gpu_idx}')
+        self.lock = threading.Lock()
+
+        # 每个worker有独立的模型副本
+        self.model_N = copy.deepcopy(model_N).to(self.device)
+        self.model_C = copy.deepcopy(model_C).to(self.device)
+        self.model_N.eval()
+        self.model_C.eval()
+
+        self.monte = Monte_Carlo_Double_Root_Tree(
+            meta=meta, configs=configs, Transformer_N=self.model_N, Transformer_C=self.model_C
+        )
+
+    def inference(self, batch_data):
+        with ((self.lock)):  # 确保线程安全
+            #start = time.time()
+            #print(f"🚀 GPU{self.gpu_idx} 开始工作 (时间: {time.time():.2f})")
+            try:
+                with torch.no_grad():
+                    N_memories, N_mem_masks, N_precursors, peptides = self.model_N(batch_data)
+                    C_memories, C_mem_masks, C_precursors, _ = self.model_C(batch_data)
+                    peptide = peptides[0:1]
+                    #print(peptide)
+                    #print(N_memories.shape)
+
+                    N_memory = N_memories[0:1].detach()
+                    N_mem_mask = N_mem_masks[0:1].detach()
+
+                    C_memory = C_memories[0:1].detach()
+                    C_mem_mask = C_mem_masks[0:1].detach()
+                    precursor = N_precursors[0:1].detach()
+                    #peptide = peptides[0].detach()
+
+                    r=self.monte.UCTSEARCH_Transformer([N_memory, N_mem_mask, C_memory, C_mem_mask, precursor, peptide, 0, -2])
+                    print(r)
+            except RuntimeError as e:
+                print(f"GPU worker error: {e}")
+                return(None)
+            #end = time.time()
+            #print(f"✅ GPU{self.gpu_idx} 完成工作 (时间: {time.time():.2f})")
+            #duration = end - start
+
+            #return f"GPU{self.gpu_idx} result: {duration}"
+            return(r)
 
 class MODEL:
     def __init__(self, meta, configs):
@@ -72,9 +133,9 @@ class MODEL:
             #spectra.append(torch.tensor(i[0]))
             s=torch.tensor(i[0])
 
-            int_array = torch.sqrt(s[:,1])
-            int_array /= torch.linalg.norm(int_array)
-            s[:,1] = int_array
+            #int_array = torch.sqrt(s[:,1])
+            #int_array /= torch.linalg.norm(int_array)
+            #s[:,1] = int_array
 
             spectra.append(s)
 
@@ -95,7 +156,7 @@ class MODEL:
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
 
-    def train(self, train_spec=None, valid_spec=None, mode=None):
+    def train(self, train_spec=None, valid_spec=None):
         '''
         print('Train set',end=':')
         print(train_spec)
@@ -140,11 +201,10 @@ class MODEL:
             collate_fn=self.spec_collate
         )
         #print('Training Transformer_C ...')
-        #self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
+        self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         del train_spec_set, valid_spec_set
 
     def predict(self, spec_file=None):
-        self.initialize_trainer(train=False)
         mp.set_start_method('spawn', force=True)
 
         out_file = os.path.basename(spec_file) \
@@ -161,28 +221,48 @@ class MODEL:
         f_out.write('#true_peptide\tpred_peptide\tmatched\ttrue_mass\tpred_mass\tmass_error\t')
         f_out.write('probe\tT_bisect\tT_beam\n')
 
-        monte = Monte_Carlo_Double_Root_Tree(meta=self._meta, configs=self._configs,
-                                             Transformer_N=self.Transformer_N, Transformer_C=self.Transformer_C)
-
-        #spec_set = SpecDataSet(spec_file, False)
+        num_gpus = torch.cuda.device_count()
         spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
             batch_size=self._configs['Model']['Trainer']['test_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers=num_gpus,
+            #num_workers=os.cpu_count() // num_gpus,
+            #num_workers=self._configs['Model']['Trainer']['num_workers'],
             collate_fn=self.spec_collate,
+            persistent_workers=False
         )
 
-        N_memories, N_mem_masks, N_precursors, N_peptides = self.trainer_N.predict(model=self.Transformer_N, dataloaders=spec_set_loader)
-        #C_memories, C_mem_masks, C_precursors, C_peptides = self.trainer_C.predict(model=self.Transformer_C, dataloaders=spec_set_loader)
-        #print('N_memories',end=':')
-        #print(N_memories.shape)
+        print(f"CPU核心数: {os.cpu_count()}")
+        print(f"PyTorch可用的CUDA设备: {torch.cuda.device_count()}")
 
-        sys.exit()
+        # 创建GPU workers
+        gpu_workers = []
+        for i in range(num_gpus):
+            worker = GPUWorker(self._meta, self._configs, i, self.Transformer_N, self.Transformer_C)
+            gpu_workers.append(worker)
 
-        for item in spec_set_loader:
-            start=time.time()
-            spectra, precursors, peptides = item
+        results = []
+
+        # 使用ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=num_gpus) as executor:
+            futures = []
+            for batch_idx, batch_data in enumerate(spec_set_loader):
+                gpu_idx = batch_idx % num_gpus
+                executor.submit(gpu_workers[gpu_idx].inference, batch_data)
+                #future = executor.submit(gpu_workers[gpu_idx].inference, batch_data)
+                #futures.append((batch_idx, future))
+            #for future in futures:
+            #    print(future.result())
+
+        # 清理GPU内存
+        for worker in gpu_workers:
+            del worker.model_N, worker.model_C
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        sys.exit(0)
+
+        if(False):
             test_batch_size = spectra.shape[0]
 
             spectra = spectra.to(self.Transformer_N.encoder.device)
@@ -330,17 +410,23 @@ class MODEL:
             )
 
             trainer_cfg.update(additional_cfg)
+        elif(mode=='predict'):
+            devices = "auto"
+            additional_cfg = dict(
+                devices=devices,
+                accelerator="auto",
+                enable_progress_bar=True,
+                strategy="auto"
+                #strategy="ddp_spawn"
+                #strategy = self._get_strategy()
+            )
+            trainer_cfg.update(additional_cfg)
+        else:
+            raise ValueError('The mode must be train or predict!')
 
-            '''
-            print('trainer_cfg',end=':')
-            print(len(trainer_cfg))
-            pprint(trainer_cfg)
-            print('-'*100)
-            '''
-
+        #self._utils.parse_var(trainer_cfg)
 
         trainer = pl.Trainer(**trainer_cfg)
-
         return(trainer)
 
     def initialize_models(self, mode=None, models_dir=None) -> None:
@@ -374,7 +460,6 @@ class MODEL:
             lr=self._configs['Model']['Trainer']['learning_rate'],
             weight_decay=self._configs['Model']['Trainer']['weight_decay'],
             train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
             out_writer=self.writer,
             tokenizer=None,
             meta=self._meta
@@ -393,66 +478,40 @@ class MODEL:
             lr=self._configs['Model']['Trainer']['learning_rate'],
             weight_decay=self._configs['Model']['Trainer']['weight_decay'],
             train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            calculate_precision=self._configs['Model']['Transformer']['calculate_precision'],
             out_writer=self.writer,
             meta=self._meta
         )
 
+        loaded_model=None
         if(mode=='train'):
             Transformer_model = Transformer(**model_params)
             return(Transformer_model)
-
         elif(mode=='predict'):
-            if(not os.path.exists(model_filename_N) or not os.path.exists(model_filename_C)):
-                sys.exit('Please check the directory of Transormer models!')
-
-            self.initialize_trainer(train=False)
-
-            device = torch.empty(1).device  # Use the default device.
-            #device = 'cuda'
-            device = None
-
-            self._utils.parse_var(device)
-            #self._utils.parse_var(loaded_model_params)
-
+            ckpt_file = os.path.join(model_dir, 'checkpoints', 'last.ckpt')
+            if(not os.path.exists(ckpt_file)):
+                raise ValueError('Please check the directory of Transormer models!')
+            #self._utils.parse_var(device)
+            device='cpu'
             try:
-                self.Transformer_N = Transformer.load_from_checkpoint(
-                    model_filename_N, map_location=device, **loaded_model_params
-                )
-
-                self.Transformer_C = Transformer.load_from_checkpoint(
-                    model_filename_C, map_location=device, **loaded_model_params
+                loaded_model = Transformer.load_from_checkpoint(
+                    ckpt_file, map_location=device, **loaded_model_params
                 )
 
                 architecture_params = set(model_params.keys()) - set(
                     loaded_model_params.keys()
                 )
-
                 for param in architecture_params:
-                    if model_params[param] != self.Transformer_N.hparams[param]:
+                    if model_params[param] != loaded_model.hparams[param]:
                         warnings.warn(
                             f"Mismatching {param} parameter in "
-                            f"model checkpoint ({self.Transformer_N.hparams[param]}) "
-                            f"vs config file ({model_params[param]}); "
-                            "using the checkpoint."
-                        )
-
-                    if model_params[param] != self.Transformer_C.hparams[param]:
-                        warnings.warn(
-                            f"Mismatching {param} parameter in "
-                            f"model checkpoint ({self.Transformer_C.hparams[param]}) "
+                            f"model checkpoint ({loaded_model.hparams[param]}) "
                             f"vs config file ({model_params[param]}); "
                             "using the checkpoint."
                         )
             except RuntimeError:
                 try:
-                    self.Transformer_N = Transformer.load_from_checkpoint(
-                        model_filename_N,
-                        map_location=device,
-                        **model_params,
-                    )
-                    self.Transformer_C = Transformer.load_from_checkpoint(
-                        model_filename_C,
+                    loaded_model = Transformer.load_from_checkpoint(
+                        ckpt_file,
                         map_location=device,
                         **model_params,
                     )
@@ -462,6 +521,8 @@ class MODEL:
                     )
         else:
             sys.exit(0)
+
+        return(loaded_model)
 
     def _get_strategy(self) -> Union[str, DDPStrategy]:
         """Get the strategy for the Trainer.
