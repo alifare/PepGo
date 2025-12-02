@@ -55,13 +55,16 @@ def epoch_based_parse(file_path):
 
     print(f"\n最终解析结果:")
     print(f"总epoch数: {len(result_df)}")
-    print(f"epoch列表: {sorted(result_df['epoch'].unique())}")
+    #print(f"epoch列表: {sorted(result_df['epoch'].unique())}")
 
     return result_df
 
-csv_file = sys.argv[1]
-print('csv_file',end=':')
-print(csv_file)
 
-result_df = epoch_based_parse(csv_file)
-print(result_df)
+if(len(sys.argv)>1):
+    csv_file = sys.argv[1]
+    print('\n'+'-'*100)
+    print('csv_file',end=':')
+    print(csv_file)
+
+    result_df = epoch_based_parse(csv_file)
+    print(result_df)

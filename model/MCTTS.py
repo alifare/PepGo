@@ -92,7 +92,7 @@ class MCTTS_Node(Node):
 
 class Monte_Carlo_Double_Root_Tree:
     def __init__(self, meta, configs, Transformer_N=None, Transformer_C=None):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         self._utils = UTILS()
         self._meta = meta 
         self._configs = configs
@@ -146,7 +146,7 @@ class Monte_Carlo_Double_Root_Tree:
         #Others
         self._size_upper_limit = pow(len(self._tokens_values), self._ceiling)
 
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
 
     def readin_spectrum(self, spectrum):
         spectrum_cupy = cp.array(spectrum)
@@ -317,7 +317,7 @@ class Monte_Carlo_Double_Root_Tree:
         return(tree, hierarchical_nodes)
     
     def make_branches(self, depth=None):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
        
         branches_arr=[]
         #for i in range(0, self._depth_Transformer):
@@ -336,11 +336,11 @@ class Monte_Carlo_Double_Root_Tree:
                     sys.exit('Error: '+ e_key + 'already exists in branches_dict!')
             branches_arr.append(branches_dict)
 
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(branches_arr)
 
     def plant_perfect_tree(self, precursor, root, tail_mass, model, memories, mem_masks, mode, delta):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #mode=0 Transformer mode
         #mode=1 Spectrum Probes mode
         #self._utils.parse_var(precursor)
@@ -350,7 +350,7 @@ class Monte_Carlo_Double_Root_Tree:
         root_residue_list_key = '_'.join(root_residue_list)
 
         #self._utils.parse_var(root_residue_list)
-        self._utils.parse_var(root_residue_list_nohead)
+        #self._utils.parse_var(root_residue_list_nohead)
         #self._utils.parse_var(root_residue_list_key)
         #self._utils.parse_var(self.branches_arr, 'self.branches_arr')
         
@@ -361,16 +361,16 @@ class Monte_Carlo_Double_Root_Tree:
 
         if(mode==0):
             for i in range(len(self.branches_arr)-1):
-                print('loop:'+str(i))
+                #print('loop:'+str(i))
                 #self._utils.parse_var()
                 branches_dict = self.branches_arr[i]
                 branches_keys = list(branches_dict.keys())
                 branches_values = list(branches_dict.values())
 
-                self._utils.parse_var(branches_dict)
-                self._utils.parse_var(branches_keys)
-                self._utils.parse_var(branches_values)
-                print('='*100)
+                #self._utils.parse_var(branches_dict)
+                #self._utils.parse_var(branches_keys)
+                #self._utils.parse_var(branches_values)
+                #print('='*100)
 
                 branches = []
                 for e in branches_values:
@@ -396,14 +396,14 @@ class Monte_Carlo_Double_Root_Tree:
                 if(i==0 and (root.residue == '<' or root.residue == '>')): #First prediction
                     branches=torch.zeros(batch_size, 0, dtype=torch.int64, device=model.decoder.device)
                     repeat_n=1
-                    self._utils.parse_var(branches, 'A')
                 else:
-                    self._utils.parse_var(branches, 'B')
+                    #self._utils.parse_var(branches, 'B')
                     branches = model.tokenizer.tokenize(branches)
                     branches = branches.to(model.decoder.device)
-                    self._utils.parse_var(branches, 'C')
+                    #self._utils.parse_var(branches, 'C')
 
-                    #sys.exit('i=='+str(i))
+                #print('i=='+str(i))
+                #self._utils.parse_var(branches, 'A')
 
                 precursors_n = einops.repeat(precursor, "B L -> (B S) L", S=repeat_n)
                 memories_n = einops.repeat(memories,  "B L V -> (S B) L V", S=repeat_n)
@@ -413,23 +413,20 @@ class Monte_Carlo_Double_Root_Tree:
                 memories_n = memories_n.to(model.decoder.device)
                 mem_masks_n = mem_masks_n.to(model.decoder.device)
 
-                self._utils.parse_var(branches, 'D')
+                #self._utils.parse_var(branches, 'D')
                 #print(memories_n.shape)
                 #print(mem_masks_n.shape)
                 #print(precursors_n.shape)
 
-
-                #(logits, tokens) = model.decoder(
                 logits = model.decoder(
                     tokens=branches,
                     memory=memories_n,
                     memory_key_padding_mask=mem_masks_n,
                     precursors=precursors_n
                 )
-                print('i==' + str(i))
-                self._utils.parse_var(branches, 'E')
-
-                self._utils.parse_var(logits)
+                #print('i==' + str(i))
+                #self._utils.parse_var(branches, 'E')
+                #self._utils.parse_var(logits)
                 #self._utils.parse_var(perfect_tree, 'B')
 
                 #(logits, tokens) = model.decoder(branches, precursors_n, memories_n, mem_masks_n, partial=True)
@@ -455,7 +452,7 @@ class Monte_Carlo_Double_Root_Tree:
                         #print('prob',end=':')
                         #print(perfect_tree[key_j][0])
                         #print('='*100)
-                self._utils.parse_var(perfect_tree, 'C')
+                #self._utils.parse_var(perfect_tree, 'C')
     
             #Beam search to get delta
             if(self.transformer_beam_search_delta and (delta == -4)):
@@ -571,7 +568,7 @@ class Monte_Carlo_Double_Root_Tree:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(perfect_tree)
         
     def parse_subtree(self, tree=None):
@@ -1017,7 +1014,7 @@ class Monte_Carlo_Double_Root_Tree:
     '''
 
     def give_birth_to_Transformer(self, precursor, total_mass, N_root, N_memory, N_mem_mask, C_root, C_memory, C_mem_mask, mode, delta):
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         
         N_tail_mass = total_mass - self._mass_dict['<'] - C_root.mass
         C_tail_mass = total_mass - self._mass_dict['>'] - N_root.mass
@@ -1027,8 +1024,8 @@ class Monte_Carlo_Double_Root_Tree:
             perfect_N_tree = self.plant_perfect_tree(precursor, N_root, N_tail_mass, self.Transformer_N, N_memory, N_mem_mask, mode, delta)
             perfect_C_tree = self.plant_perfect_tree(precursor, C_root, C_tail_mass, self.Transformer_C, C_memory, C_mem_mask, mode, delta)
         end=time.time()
-        print('time_consumed in self.plant_perfect_tree with mode '+str(mode),end=':')
-        print(end-start)
+        #print('time_consumed in self.plant_perfect_tree with mode '+str(mode),end=':')
+        #print(end-start)
 
         #if(delta==-4):
         #    self._utils.parse_var(perfect_N_tree)
@@ -1053,8 +1050,8 @@ class Monte_Carlo_Double_Root_Tree:
                 N_leaf.delta[delta] = self.activation(self.DEFAULTPOLICY_bisect(N_tail_mass))
                 C_leaf.delta[delta] = self.activation(self.DEFAULTPOLICY_bisect(C_tail_mass))
                 end=time.time()
-                print('time_consumed in self.DEFAULTPOLICY_bisect',end=':')
-                print(end-start)
+                #print('time_consumed in self.DEFAULTPOLICY_bisect',end=':')
+                #print(end-start)
             
             N_delta = N_leaf.delta[delta]
             C_delta = C_leaf.delta[delta]
@@ -1073,12 +1070,12 @@ class Monte_Carlo_Double_Root_Tree:
 
             i+=1
         end=time.time()
-        print('time_consumed in self.TREEPOLICY_Transformer and self.BACKUP in '+str(i)+ ' iterations',end=':')
-        print(end-start)
+        #print('time_consumed in self.TREEPOLICY_Transformer and self.BACKUP in '+str(i)+ ' iterations',end=':')
+        #print(end-start)
 
         N_bestchild = self.BESTCHILD(node=N_root, scalar=0.0, most=False)
         C_bestchild = self.BESTCHILD(node=C_root, scalar=0.0, most=False)
-        print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(N_bestchild, C_bestchild)
 
     #def UCTSEARCH_Transformer(self, N_memory, N_mem_mask, C_memory, C_mem_mask, precursor, peptide, mode=0, delta=-1):

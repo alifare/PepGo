@@ -480,7 +480,8 @@ class Transformer(pl.LightningModule):
             sequence.
         """
         _, _, peptides = batch
-        mzs, ints, precursors, tokens = self._process_batch(batch)
+        #mzs, ints, precursors, tokens = self._process_batch(batch)
+        mzs, ints, precursors, _ = self._process_batch(batch)
         #return self.beam_search_decode(mzs, ints, precursors)
         memories, mem_masks = self.encoder(mzs, ints)
         #self._utils.parse_var(memories)
