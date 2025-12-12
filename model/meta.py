@@ -18,6 +18,8 @@ class META:
         ptm_list = os.path.join(folder_path, 'PTMs.list')
         self._utils = UTILS()
 
+        self._sorted_peptides_mass_arr_cache = None
+
         #configs
         self._configs = configs
 
@@ -153,9 +155,66 @@ class META:
     def residue_to_onehot(self):
         return(self._residue_to_onehot)
 
+    #@property
+    #def sorted_peptides_mass_arr(self):
+    #    return(self._make_residue_combination_pool())
+
     @property
     def sorted_peptides_mass_arr(self):
-        return(self._make_residue_combination_pool())
+        if self._sorted_peptides_mass_arr_cache is None:
+            # 只生成一次
+            self._sorted_peptides_mass_arr_cache = self._make_residue_combination_pool()
+            print(f"生成质量数组缓存，ID: {id(self._sorted_peptides_mass_arr_cache)}")
+        else:
+            print(f"质量数组缓存已经存在，ID: {id(self._sorted_peptides_mass_arr_cache)}")
+
+        return self._sorted_peptides_mass_arr_cache
+
+    def _make_residue_combination_pool(self):
+        residue_mass_values = list(self._tokens.values())
+
+        # Probes
+        probe_layers = int(self._configs['MCTTS']['Tree']['probe_layers'])
+        ceiling = int(self._configs['MCTTS']['Delta']['ceiling'])
+        print(f"生成质量组合池:")
+        print(f"  residue数: {len(residue_mass_values)}")
+        print(f"  ceiling: {ceiling}")
+        print(f"  probe层数: {probe_layers}")
+
+        peptides_mass_arr = [0.0]
+        batch_size = 100000
+        for i in range(1, ceiling + 1):
+            combi_gen = itertools.combinations_with_replacement(residue_mass_values, i)
+            # 分批处理
+            batch = []
+            for combo in combi_gen:
+                mass = sum(combo)
+                batch.append(mass)
+                if (i <= probe_layers * 1):
+                    batch.append(-mass)
+                if len(batch) >= batch_size:
+                    peptides_mass_arr.extend(batch)
+                    batch = []
+            # 添加剩余批次
+            if batch:
+                peptides_mass_arr.extend(batch)
+
+            '''
+            combi=itertools.combinations_with_replacement(residue_mass_values, i)
+            combi=list(combi)
+            mass_arr = [sum(x) for x in combi]
+            peptides_mass_arr.extend(mass_arr)
+
+
+            if(i <= probe_layers*1):
+                mass_arr_negative = [-x for x in mass_arr]
+                peptides_mass_arr.extend(mass_arr_negative)
+                #print(mass_arr_negative)
+            '''
+
+        np_array = np.array(peptides_mass_arr, dtype=np.float64)
+        np_array.sort()
+        return (np_array)
 
     def _read_ptms(self, input_file):
         ptm_dict = dict()
@@ -301,27 +360,6 @@ class META:
         for k,v in enumerate(onehot_to):
              to_onehot[v]=k
         return(onehot_to, to_onehot)
-
-    def _make_residue_combination_pool(self):
-        residue_mass_values = list(self._tokens.values())
-
-        #Probes
-        probe_layers = int(self._configs['MCTTS']['Tree']['probe_layers'])
-        ceiling = int(self._configs['MCTTS']['Delta']['ceiling'])
-    
-        peptides_mass_arr = [0.0]
-        for i in range(1, ceiling+1):
-            combi=itertools.combinations_with_replacement(residue_mass_values, i)
-            combi=list(combi)
-            mass_arr = [sum(x) for x in combi]
-            peptides_mass_arr.extend(mass_arr)
-
-            if(i <= probe_layers*1):
-                mass_arr_negative = [-x for x in mass_arr]
-                peptides_mass_arr.extend(mass_arr_negative)
-                #print(mass_arr_negative)
-
-        return(sorted(peptides_mass_arr))
 
     def preprocess_spectrum(self, spectrum):
         # Spectrum preprocessing functions.

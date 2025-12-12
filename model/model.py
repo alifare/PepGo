@@ -51,24 +51,55 @@ import copy
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+#from torch.multiprocessing import Process, Manager, Pool
+
 from .utils import UTILS
 
+class ParallelMonitor:
+    def __init__(self):
+        self.active_gpus = set()
+        self.lock = threading.Lock()
+        self.max_concurrent = 0
+
+    def track_gpu_activity(self, gpu_idx, is_starting):
+        with self.lock:
+            if is_starting:
+                self.active_gpus.add(gpu_idx)
+            else:
+                self.active_gpus.discard(gpu_idx)
+
+            current = len(self.active_gpus)
+            if current > self.max_concurrent:
+                self.max_concurrent = current
+
+            if is_starting:
+                print(f"🚀 GPU{gpu_idx} 开始工作，当前活跃GPU数: {current}/{torch.cuda.device_count()}\n")
+
+
 class GPUWorker:
-    def __init__(self, meta, configs, gpu_idx, model_N, model_C, inner_max_workers=None, mode=0, delta=-1):
+    def __init__(self, meta, configs, gpu_idx, model_N, model_C, inner_max_workers=None, mode=0, delta=-1, monitor=None):
+        #self.monte = monte
         self.gpu_idx = gpu_idx
         self.device = torch.device(f'cuda:{gpu_idx}')
         self.mode = mode
         self.delta = delta
         self._utils = UTILS()
+        self.monitor = monitor
 
+        # 初始化统计信息
+        self.stats = {
+            'total_batches': 0,
+            'total_samples': 0,
+            'failed_samples': 0,
+            'start_time': time.time(),
+            'batch_times': [],
+            'processing_times': []
+        }
         print(f'初始化设备: {self.device}')
 
         # 设置内部线程池 - 用于并行处理单个批次内的样本
-        self.inner_max_workers = inner_max_workers or min(4, torch.cuda.device_count() * 2)
+        self.inner_max_workers = inner_max_workers or min(16, torch.cuda.device_count() * 2)
         self.thread_pool = ThreadPoolExecutor(max_workers=self.inner_max_workers)
-
-        # 使用锁保护模型访问（如果模型本身不是线程安全的）
-        self.model_lock = threading.Lock()
 
         # 模型副本
         with torch.cuda.device(self.device):
@@ -87,35 +118,57 @@ class GPUWorker:
         """
         推理函数 - 正确处理并行
         """
+        if self.monitor:
+            self.monitor.track_gpu_activity(self.gpu_idx, True)
+
+        batch_start = time.time()
         try:
-            # 1. 数据移动到GPU（这部分很快，不需要锁）
-            #batch_data = self._move_to_device(batch_data)
-            # 2. 批量推理（这部分需要模型锁）
-            with self.model_lock, torch.no_grad(), torch.cuda.device(self.device):
+            # 1. 批量推理
+            with torch.no_grad(), torch.cuda.device(self.device):
                 N_memories, N_mem_masks, precursors, peptides = self.model_N(batch_data)
                 C_memories, C_mem_masks, _, _ = self.model_C(batch_data)
 
-            # 3. 并行处理样本（这部分不需要锁，可以并行）
-            return self._parallel_process_samples(
+            batch_size = N_memories.shape[0]
+            self.stats['total_batches'] += 1
+            self.stats['total_samples'] += batch_size
+
+            # 2. 并行处理样本
+            #results = self._parallel_process_samples(
+            results = self._parallel_process_samples2(
                 N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides
             )
+            # 记录处理时间
+            batch_time = time.time() - batch_start
+            self.stats['batch_times'].append(batch_time)
+            return results
 
         except Exception as e:
             print(f"GPU{self.gpu_idx} 推理错误: {e}")
             raise
 
-    def _move_to_device(self, batch_data):
-        """将数据移动到正确的GPU"""
-        if isinstance(batch_data, (list, tuple)):
-            return [
-                item.to(self.device, non_blocking=True)
-                if torch.is_tensor(item) else item
-                for item in batch_data
+        finally:
+            # 通知监控器结束
+            if self.monitor:
+                self.monitor.track_gpu_activity(self.gpu_idx, False)
+
+    def _parallel_process_samples2(self, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
+        try:
+            samples = [
+                N_memories.detach(),
+                N_mem_masks.detach(),
+                C_memories.detach(),
+                C_mem_masks.detach(),
+                precursors.detach(),
+                peptides,
+                self.mode,
+                self.delta
             ]
-        elif torch.is_tensor(batch_data):
-            return batch_data.to(self.device, non_blocking=True)
-        else:
-            return batch_data
+            results = self.monte.UCTSEARCH_final(samples)
+            return(results)
+
+        except Exception as e:
+            print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
+            return None
 
     def _parallel_process_samples(self, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
         """
@@ -152,14 +205,20 @@ class GPUWorker:
 
                     print(f"GPU{self.gpu_idx}: {completed}/{batch_size} "
                           f"({completed / batch_size * 100:.1f}%), "
-                          f"预计剩余: {remaining:.1f}s")
+                          f"预计剩余: {remaining:.1f}s\n")
 
             except TimeoutError:
-                print(f"GPU{self.gpu_idx} 样本 {idx} 处理超时")
+                print(f"GPU{self.gpu_idx} 样本 {idx} 处理超时\n")
                 results[idx] = None
+                self.stats['failed_samples'] += 1
             except Exception as e:
-                print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}")
+                print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
                 results[idx] = None
+                self.stats['failed_samples'] += 1
+
+        # 记录处理时间
+        processing_time = time.time() - start_time
+        self.stats['processing_times'].append(processing_time)
 
         return results
 
@@ -181,12 +240,77 @@ class GPUWorker:
             ]
             # 执行Monte Carlo搜索
             result = self.monte.UCTSEARCH_Transformer(sample_data)
-
             return result
 
         except Exception as e:
-            print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}")
+            print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
             return None
+
+    def get_stats(self):
+        """
+        获取统计信息
+        """
+        total_samples = self.stats['total_samples']
+        failed_samples = self.stats['failed_samples']
+
+        # 计算成功率
+        if total_samples > 0:
+            success_rate = (total_samples - failed_samples) / total_samples * 100
+        else:
+            success_rate = 0
+
+        # 计算平均时间
+        if len(self.stats['batch_times']) > 0:
+            avg_batch_time = sum(self.stats['batch_times']) / len(self.stats['batch_times'])
+        else:
+            avg_batch_time = 0
+
+        if total_samples > 0:
+            avg_time_per_sample = sum(self.stats['processing_times']) / total_samples
+        else:
+            avg_time_per_sample = 0
+
+        # 计算总运行时间
+        total_runtime = time.time() - self.stats['start_time']
+
+        return {
+            'total_samples': total_samples,
+            'failed_samples': failed_samples,
+            'success_rate': success_rate,
+            'avg_batch_time': avg_batch_time,
+            'avg_time_per_sample': avg_time_per_sample,
+            'total_batches': self.stats['total_batches'],
+            'total_runtime': total_runtime,
+            'samples_per_second': total_samples / max(0.001, total_runtime)
+        }
+
+    def print_detailed_stats(self):
+        """打印详细统计信息"""
+        stats = self.get_stats()
+
+        print(f"\n{'=' * 60}")
+        print(f"GPU{self.gpu_idx} 详细统计")
+        print(f"{'=' * 60}")
+        print(f"总批次处理: {stats['total_batches']}")
+        print(f"总样本处理: {stats['total_samples']}")
+        print(f"失败样本数: {stats['failed_samples']}")
+        print(f"成功率: {stats['success_rate']:.2f}%")
+        print(f"平均批次时间: {stats['avg_batch_time']:.3f}秒")
+        print(f"平均样本时间: {stats['avg_time_per_sample']:.3f}秒")
+        print(f"总运行时间: {stats['total_runtime']:.2f}秒")
+        print(f"处理速度: {stats['samples_per_second']:.2f} 样本/秒")
+
+        # 显示处理时间分布
+        if self.stats['batch_times']:
+            print(f"\n批次时间分布:")
+            print(f"  最短: {min(self.stats['batch_times']):.3f}秒")
+            print(f"  最长: {max(self.stats['batch_times']):.3f}秒")
+            print(f"  中位数: {sorted(self.stats['batch_times'])[len(self.stats['batch_times']) // 2]:.3f}秒")
+
+        if self.stats['processing_times']:
+            print(f"\n样本处理时间分布:")
+            print(f"  最短: {min(self.stats['processing_times']):.3f}秒")
+            print(f"  最长: {max(self.stats['processing_times']):.3f}秒")
 
     def inference_async(self, batch_data):
         """
@@ -203,6 +327,9 @@ class GPUWorker:
         if torch.cuda.is_available():
             torch.cuda.synchronize(self.device)
             torch.cuda.empty_cache()
+
+        # 打印最终统计
+        self.print_detailed_stats()
 
         print(f"GPU{self.gpu_idx} 资源已清理")
 
@@ -275,14 +402,14 @@ class MODEL:
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers=self._configs['Model']['Trainer']['min_workers'],
             collate_fn=self.spec_collate,
             shuffle=True,
         )
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers=self._configs['Model']['Trainer']['min_workers'],
             collate_fn=self.spec_collate
         )
         #print('Training Transformer_N ...')
@@ -295,14 +422,14 @@ class MODEL:
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
             batch_size=self._configs['Model']['Trainer']['train_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers=self._configs['Model']['Trainer']['min_workers'],
             collate_fn=self.spec_collate,
             shuffle=True,
         )
         valid_spec_set_loader = torch.utils.data.DataLoader(
             valid_spec_set,
             batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers=self._configs['Model']['Trainer']['min_workers'],
             collate_fn=self.spec_collate
         )
         #print('Training Transformer_C ...')
@@ -327,38 +454,46 @@ class MODEL:
         #f_out.write('#true_peptide\tpred_peptide\tmatched\ttrue_mass\tpred_mass\tmass_error\t')
         #f_out.write('probe\tT_bisect\tT_beam\n')
 
-        start = time.time()
-        num_gpus = torch.cuda.device_count()
+        start_time = time.time()
+        num_GPUs = torch.cuda.device_count()
+        num_CPUs = os.cpu_count()
+        #num_workers = max(self._configs['Model']['Trainer']['min_workers'], num_CPUs // num_GPUs)
+        num_workers = 4
         spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
             batch_size=self._configs['Model']['Trainer']['test_batch_size'],
-            num_workers=num_gpus,
-            #num_workers=os.cpu_count() // num_gpus,
-            #num_workers=self._configs['Model']['Trainer']['num_workers'],
+            num_workers= num_workers,
             collate_fn=self.spec_collate,
+            shuffle=False,
             persistent_workers=False
         )
 
         print(f"CPU核心数: {os.cpu_count()}")
-        print(f"使用 {num_gpus} 个GPU进行推理")
+        print(f"使用 {num_GPUs} 个GPU进行推理")
         print(f"DataLoader共有 {len(spec_set_loader)} 个批次")
 
+
         # 创建GPU workers
+        monitor = ParallelMonitor()
         gpu_workers = []
-        for i in range(num_gpus):
-            worker = GPUWorker(self._meta, self._configs, i, self.Transformer_N, self.Transformer_C, mode=0, delta=-2)
+        for i in range(num_GPUs):
+            worker = GPUWorker(self._meta, self._configs, i, self.Transformer_N, self.Transformer_C, mode=0, delta=-2, monitor=monitor)
             gpu_workers.append(worker)
 
+        for w in gpu_workers:
+            print('Monte对象ID', end=':')
+            print(id(w.monte))
+            print('monte._sorted_peptides_mass_arr ID', end=':')
+            print(id(w.monte._sorted_peptides_mass_arr))
+
         # 使用ThreadPoolExecutor
-        total_results = []
-        batch_info = {}  # 记录批次信息
-        start_time = time.time()
-        with ThreadPoolExecutor(max_workers=num_gpus) as executor:
-            #futures = []
+        total_results = {}
+        with ThreadPoolExecutor(max_workers=num_GPUs) as executor:
             futures = {}
             for batch_idx, batch_data in enumerate(spec_set_loader):
-                gpu_idx = batch_idx % num_gpus
+                print(f"开始分配任务,批次:"+str(batch_idx))
+                gpu_idx = batch_idx % num_GPUs
                 batch_size = batch_data[0].shape[0]
 
                 future = executor.submit(gpu_workers[gpu_idx].inference, batch_data)
@@ -374,18 +509,6 @@ class MODEL:
                     print(f"已提交 {batch_idx + 1}/{len(spec_set_loader)} 个批次到 GPU{gpu_idx}")
 
             print(f"所有 {len(futures)} 个批次已提交，开始处理...")
-
-
-            '''
-            # 收集所有结果
-            for future in futures:
-                try:
-                    batch_results = future.result(timeout=3000)  # 5分钟超时
-                    total_results += batch_results
-                except Exception as e:
-                    print(f"GPU{gpu_idx} 批次样本处理超时或错误: {e}")
-                    total_results.append(None)
-            '''
 
             # 使用as_completed收集结果（更高效）
             completed_batches = 0
@@ -404,18 +527,18 @@ class MODEL:
                     # 验证结果数量
                     if batch_results is None:
                         print(f"警告: GPU{gpu_idx} 批次 {batch_idx} 返回None")
-                        batch_results = [None for _ in range(expected_size)]
+                        batch_results = [None] * expected_size
                     elif len(batch_results) != expected_size:
                         print(f"警告: GPU{gpu_idx} 批次 {batch_idx} 结果数量不匹配 "
                               f"(期望 {expected_size}, 实际 {len(batch_results)})")
                         # 填充或截断结果
                         if len(batch_results) < expected_size:
-                            batch_results.extend([None for _ in range(expected_size - len(batch_results))])
+                            batch_results.extend([None] * (expected_size - len(batch_results)))
                         else:
                             batch_results = batch_results[:expected_size]
 
                     # 添加到总结果
-                    total_results.extend(batch_results)
+                    total_results[batch_idx] = batch_results
                     completed_batches += 1
 
                     # 计算并显示进度
@@ -436,25 +559,23 @@ class MODEL:
                           f"进度: {completed_batches}/{len(futures)} "
                           f"({completed_batches / len(futures) * 100:.1f}%) | "
                           f"已用: {format_time(elapsed)} | "
-                          f"预计剩余: {format_time(estimated_remaining)}")
+                          f"预计剩余: {format_time(estimated_remaining)}\n")
 
                 except TimeoutError:
                     failed_batches += 1
                     print(f"✗ GPU{gpu_idx} 批次 {batch_idx} 处理超时 (5分钟)")
                     # 添加与批次大小匹配的None列表
-                    total_results.extend([None] * expected_size)
+                    total_results[batch_idx] = [None] * expected_size
 
                 except Exception as e:
                     failed_batches += 1
                     print(f"✗ GPU{gpu_idx} 批次 {batch_idx} 处理错误: {e}")
                     # 添加与批次大小匹配的None列表
-                    total_results.extend([None] * expected_size)
+                    total_results[batch_idx] = [None] * expected_size
 
         # 最终统计
         end_time = time.time()
         total_time = end_time - start_time
-        total_samples = len(total_results)
-        successful_samples = sum(1 for r in total_results if r is not None)
 
         print("\n" + "=" * 60)
         print("推理完成！")
@@ -463,11 +584,7 @@ class MODEL:
         print(f"完成批次: {completed_batches}")
         print(f"失败批次: {failed_batches}")
         print(f"成功率: {completed_batches / len(futures) * 100:.1f}%")
-        print(f"总样本数: {total_samples}")
-        print(f"成功样本: {successful_samples}")
-        print(f"样本成功率: {successful_samples / total_samples * 100:.1f}%")
-        print(f"总耗时: {format_time(total_time)}")
-        print(f"平均速度: {total_samples / max(total_time, 0.001):.2f} 样本/秒")
+        print(f"计算过程总耗时: {format_time(total_time)}")
 
         # 打印每个GPU的统计信息
         print("\n各GPU统计:")
@@ -475,11 +592,28 @@ class MODEL:
             try:
                 stats = worker.get_stats()
                 print(f"GPU{i}: "
-                      f"处理样本 {stats.get('total_samples', 0)} | "
-                      f"成功率 {stats.get('success_rate', 0) * 100:.1f}% | "
-                      f"平均时间 {stats.get('avg_time_per_sample', 0):.3f}s/样本")
-            except:
-                print(f"GPU{i}: 统计信息不可用")
+                      f"处理样本 {stats['total_samples']} | "
+                      f"成功率 {stats['success_rate']:.1f}% | "
+                      f"平均时间 {stats['avg_time_per_sample']:.3f}s/样本 | "
+                      f"速度 {stats['samples_per_second']:.2f}样本/秒")
+            except Exception as e:
+                print(f"GPU{i}: 统计信息获取失败 - {e}")
+
+        # 汇总统计
+        print("\n汇总统计:")
+        total_samples = sum(w.get_stats()['total_samples'] for w in gpu_workers)
+        total_failed = sum(w.get_stats()['failed_samples'] for w in gpu_workers)
+        total_time = max(w.get_stats()['total_runtime'] for w in gpu_workers)
+
+        if total_samples > 0:
+            overall_success_rate = (total_samples - total_failed) / total_samples * 100
+            overall_speed = total_samples / max(0.001, total_time)
+
+            print(f"总样本数: {total_samples}")
+            print(f"总失败数: {total_failed}")
+            print(f"总成功率: {overall_success_rate:.1f}%")
+            print(f"总速度: {overall_speed:.2f} 样本/秒")
+            print(f"总时间: {total_time:.2f} 秒")
 
         # 清理GPU内存
         print("\n清理资源...")
@@ -493,14 +627,17 @@ class MODEL:
             torch.cuda.empty_cache()
 
         print("推理完成！")
-
-        for result in total_results:
-            if(result is not None):
-                line = '\t'.join([str(i) for i in result])
-                f_out.write(line+'\n')
+        for batch_idx in sorted(total_results):
+            batch_results = total_results[batch_idx]
+            for result in batch_results:
+                if (result is not None):
+                    line = '\t'.join([str(i) for i in result])
+                else:
+                    line = str(result)
+                f_out.write(line + '\n')
         f_out.close()
 
-        return total_results
+        #return total_results
 
     def configure_callbacks(self, model_dir: str):
         curr_filename = self.current_datetime + "-{epoch:02d}-{step}-{valid_CELoss:.3f}"

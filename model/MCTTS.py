@@ -1,3 +1,4 @@
+import os
 import re
 import sys
 import math
@@ -8,6 +9,7 @@ import numpy as np
 import cupy as cp
 import einops
 import torch
+from numba.core.cgutils import terminate
 
 np.set_printoptions(suppress=True)
 
@@ -26,6 +28,15 @@ from treelib import Node, Tree
 
 import bisect
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
+
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+from torch.multiprocessing import Process, Manager, Pool
+
+
 class myNode():
     def __init__(self, residue='', mass=0.0, layer=0, parent=None):
         self.visits = 1
@@ -43,20 +54,19 @@ class myNode():
 
     def add_mass(self):
         cumulative_mass = self.parent.cumulative_mass + self.mass if(self.parent) else self.mass
-        return(cumulative_mass)    
+        return(cumulative_mass)
 
     def is_terminal(self):
         return(self.layer<=0)
-    
+
     def add_child(self, child):
         self.children.append(child)
-    
+
     def update(self):
         self.visits+=1
 
     def fully_expanded(self, breadth):
         return(len(self.children) == breadth)
-
 
 class MCTTS_Node(Node):
     def __init__(self, residue='', mass=0.0, layer=0, ground_truth=False, parent=None):
@@ -81,20 +91,21 @@ class MCTTS_Node(Node):
 
     def add_child(self, child):
         self.children.append(child)
-    
+
     def update(self):
         self.visits+=1
 
     def fully_expanded(self, breadth):
         if(len(self.children) == breadth):
             return True
-        return False    
+        return False
 
 class Monte_Carlo_Double_Root_Tree:
     def __init__(self, meta, configs, Transformer_N=None, Transformer_C=None):
+    #def __init__(self, meta, configs):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         self._utils = UTILS()
-        self._meta = meta 
+        self._meta = meta
         self._configs = configs
 
         #Meta infomation
@@ -119,7 +130,7 @@ class Monte_Carlo_Double_Root_Tree:
         self._depth_Transformer = int(self._configs['MCTTS']['Tree']['depth_Transformer'])
         self._depth_Transformer_beam = int(self._configs['MCTTS']['Tree']['depth_Transformer_beam'])
         self._probe_layers = int(self._configs['MCTTS']['Tree']['probe_layers'])
-        
+
         self._ion_type_left = self.make_eval_dict(self._configs['Model']['Probe']['ion_type']['left'])
         self._ion_type_right = self.make_eval_dict(self._configs['Model']['Probe']['ion_type']['right'])
         self._neural_loss = self.make_eval_dict(self._configs['Model']['Probe']['neural_loss'])
@@ -142,11 +153,19 @@ class Monte_Carlo_Double_Root_Tree:
         #Transformer models
         self.Transformer_N = Transformer_N
         self.Transformer_C = Transformer_C
+        self.model_residues = self.Transformer_N.residues
+
 
         #Others
         self._size_upper_limit = pow(len(self._tokens_values), self._ceiling)
 
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        self.test_batch_size = self._configs['Model']['Trainer']['test_batch_size']
+        self.num_GPUs = torch.cuda.device_count()
+        self.num_CPUs = os.cpu_count()
+        self.max_workers_per_GPU = max(self.test_batch_size, self.num_CPUs // self.num_GPUs)
+        self.thread_pool = ThreadPoolExecutor(max_workers=self.max_workers_per_GPU)
+
+    #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
 
     def readin_spectrum(self, spectrum):
         spectrum_cupy = cp.array(spectrum)
@@ -162,7 +181,7 @@ class Monte_Carlo_Double_Root_Tree:
             charge_num = self._configs['Model']['Probe']['charge_num']
         elif(not isinstance(charge_num, int)):
             sys.exit('charge_num must be an integer!')
-            
+
         charge_str = ','.join([str(i)+':+'+'H'*i+':'+str(i) for i in range(1, charge_num+1)])
         charge = self.make_eval_dict(charge_str)
         #self._charge = self.make_eval_dict(self._configs['Model']['Probe']['charge'])
@@ -240,7 +259,7 @@ class Monte_Carlo_Double_Root_Tree:
     def dock(self, probes):
         probes = cp.expand_dims(probes, axis=2)
         mz = cp.expand_dims(self._mz, axis=0)
-        
+
         diff_raw = probes - mz
 
         diff_raw_reshape = cp.reshape(diff_raw, [diff_raw.shape[0],-1])
@@ -307,7 +326,7 @@ class Monte_Carlo_Double_Root_Tree:
                     ntruth = leaf.data.ground_truth
                     n=Node(tag=k, identifier=nid, data=MCTTS_Node(mass=nmass, layer=depth, ground_truth=ntruth))
                     tree.add_node(n, parent=leaf)
-                    
+
                     if(depth >= self._probe_layers):
                         continue
                     if(depth not in hierarchical_nodes):
@@ -315,20 +334,23 @@ class Monte_Carlo_Double_Root_Tree:
                     hierarchical_nodes[depth].append(nid)
 
         return(tree, hierarchical_nodes)
-    
+
     def make_branches(self, depth=None):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-       
+
         branches_arr=[]
         #for i in range(0, self._depth_Transformer):
         #for i in range(0, self._depth_Transformer+1):
         for i in range(0, depth + 1):
             branches_dict = dict()
             for e in product(self._tokens_keys, repeat=i):
-                e = list(e)
-                e_value = e
+                e_value = list(e) if e else ['']
+                #print('e_value',end=':')
+                #print(e_value)
                 #e_value = [self.model.decoder.tokenize_residue(j) for j in e]
-                e_key = '_'.join(['root']+e)
+                e_key = '_'.join(['root']+e_value) if e else 'root'
+                #print('e_key',end=':')
+                #print(e_key)
 
                 if(e_key not in branches_dict):
                     branches_dict[e_key] = e_value
@@ -336,50 +358,40 @@ class Monte_Carlo_Double_Root_Tree:
                     sys.exit('Error: '+ e_key + 'already exists in branches_dict!')
             branches_arr.append(branches_dict)
 
+        #self._utils.parse_var(branches_arr)
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(branches_arr)
 
-    def plant_perfect_tree(self, precursor, root, tail_mass, model, memories, mem_masks, mode, delta):
-        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+    def plant_perfect_tree_new(self, precursor, root, tail_mass, model, memories, mem_masks, mode, delta):
         #mode=0 Transformer mode
         #mode=1 Spectrum Probes mode
-        #self._utils.parse_var(precursor)
 
         root_residue_list = root.residue.split(',')
         root_residue_list_nohead = root_residue_list[1:]
         root_residue_list_key = '_'.join(root_residue_list)
 
-        #self._utils.parse_var(root_residue_list)
-        #self._utils.parse_var(root_residue_list_nohead)
-        #self._utils.parse_var(root_residue_list_key)
-        #self._utils.parse_var(self.branches_arr, 'self.branches_arr')
-        
         perfect_tree = dict()
-
         if(mode==1):
-           pass 
-
+           pass
         if(mode==0):
-            for i in range(len(self.branches_arr)-1):
-                #print('loop:'+str(i))
-                #self._utils.parse_var()
+            branches = []
+            total_branches_keys=[]
+            last_logits_indices=[]
+
+            branches_arr_len = len(self.branches_arr)-1
+            for i in range(branches_arr_len):
                 branches_dict = self.branches_arr[i]
                 branches_keys = list(branches_dict.keys())
                 branches_values = list(branches_dict.values())
 
-                #self._utils.parse_var(branches_dict)
-                #self._utils.parse_var(branches_keys)
-                #self._utils.parse_var(branches_values)
-                #print('='*100)
+                total_branches_keys.extend(branches_keys)
 
-                branches = []
                 for e in branches_values:
                     e= root_residue_list_nohead + e
                     if(len(e)>=self._pep_len):
                         sys.exit('len(e)>=self._pep_len:'+len(e))
                     branches.append(e)
-
-                #self._utils.parse_var(self._pep_len)
+                    last_logits_indices.append(i - branches_arr_len)
 
                 for i, key in enumerate(branches_keys):
                     key = key.replace('root', root_residue_list_key)
@@ -388,7 +400,81 @@ class Monte_Carlo_Double_Root_Tree:
                         perfect_tree[key_j] = [None, None, None, None, None, 0.0]
                         #[Transformer reward, Docking reward, Transformer beam delta, Docking beam delta, Bisect delta, 0 delta]
 
-                #self._utils.parse_var(perfect_tree, 'A')
+            repeat_n = len(branches)
+            branches = model.tokenizer.tokenize(branches)
+            branches = branches.to(model.decoder.device)
+
+            precursors_n = einops.repeat(precursor, "B L -> (B S) L", S=repeat_n)
+            memories_n = einops.repeat(memories, "B L V -> (S B) L V", S=repeat_n)
+            mem_masks_n = einops.repeat(mem_masks, "B L -> (S B) L", S=repeat_n)
+
+            precursors_n = precursors_n.to(model.decoder.device)
+            memories_n = memories_n.to(model.decoder.device)
+            mem_masks_n = mem_masks_n.to(model.decoder.device)
+
+            logits = model.decoder(
+                tokens=branches,
+                memory=memories_n,
+                memory_key_padding_mask=mem_masks_n,
+                precursors=precursors_n
+            )
+
+            logits_last_dim = logits.shape[-1]
+
+            indices = torch.tensor(last_logits_indices)
+            indices += logits.shape[1]
+            indices = indices.unsqueeze(1).unsqueeze(2)  # [4, 1, 1]
+            indices = indices.expand(-1, -1, logits_last_dim)  # [4, 1, 39]
+            indices = indices.to(model.decoder.device)
+
+            last_logits = torch.gather(logits, dim=1, index=indices)  # [4, 1, 39]
+            last_logits = last_logits.squeeze(1)  # [4, 39]
+
+            last_probs = torch.softmax(last_logits, dim=-1)
+            last_prob_arr = last_probs.detach().cpu().numpy()
+
+            for i, key in enumerate(total_branches_keys):
+                key = key.replace('root', root_residue_list_key)
+                for j in range(2, last_prob_arr.shape[-1]):
+                    residue = model.tokenizer.detokenize_residue(j)
+                    key_j = key +'_'+ residue
+                    perfect_tree[key_j][0] = last_prob_arr[i][j] #Transformer reward(probability)
+
+        return (perfect_tree)
+
+
+    def plant_perfect_tree(self, precursor, root, tail_mass, model, memories, mem_masks, mode, delta):
+        #mode=0 Transformer mode
+        #mode=1 Spectrum Probes mode
+
+        root_residue_list = root.residue.split(',')
+        root_residue_list_nohead = root_residue_list[1:]
+        root_residue_list_key = '_'.join(root_residue_list)
+
+        perfect_tree = dict()
+
+        if(mode==1):
+           pass
+
+        if(mode==0):
+            for i in range(len(self.branches_arr)-1):
+                branches_dict = self.branches_arr[i]
+                branches_keys = list(branches_dict.keys())
+                branches_values = list(branches_dict.values())
+
+                branches = []
+                for e in branches_values:
+                    e= root_residue_list_nohead + e
+                    if(len(e)>=self._pep_len):
+                        sys.exit('len(e)>=self._pep_len:'+len(e))
+                    branches.append(e)
+
+                for i, key in enumerate(branches_keys):
+                    key = key.replace('root', root_residue_list_key)
+                    for residue in model.residues.keys():
+                        key_j = key +'_'+ residue
+                        perfect_tree[key_j] = [None, None, None, None, None, 0.0]
+                        #[Transformer reward, Docking reward, Transformer beam delta, Docking beam delta, Bisect delta, 0 delta]
 
                 repeat_n = len(branches)
                 batch_size = precursor.shape[0]
@@ -397,26 +483,28 @@ class Monte_Carlo_Double_Root_Tree:
                     branches=torch.zeros(batch_size, 0, dtype=torch.int64, device=model.decoder.device)
                     repeat_n=1
                 else:
-                    #self._utils.parse_var(branches, 'B')
                     branches = model.tokenizer.tokenize(branches)
                     branches = branches.to(model.decoder.device)
-                    #self._utils.parse_var(branches, 'C')
-
-                #print('i=='+str(i))
-                #self._utils.parse_var(branches, 'A')
+                    self._utils.parse_var(branches)
 
                 precursors_n = einops.repeat(precursor, "B L -> (B S) L", S=repeat_n)
                 memories_n = einops.repeat(memories,  "B L V -> (S B) L V", S=repeat_n)
                 mem_masks_n = einops.repeat(mem_masks, "B L -> (S B) L", S=repeat_n)
-    
+
                 precursors_n = precursors_n.to(model.decoder.device)
                 memories_n = memories_n.to(model.decoder.device)
                 mem_masks_n = mem_masks_n.to(model.decoder.device)
 
-                #self._utils.parse_var(branches, 'D')
-                #print(memories_n.shape)
-                #print(mem_masks_n.shape)
-                #print(precursors_n.shape)
+                '''
+                print('branches.shape', end=':')
+                print(branches.shape)
+                print('precursors_n.shape', end=':')
+                print(precursors_n.shape)
+                print('memories_n.shape', end=':')
+                print(memories_n.shape)
+                print('mem_masks_n.shape', end=':')
+                print(mem_masks_n.shape)
+                '''
 
                 logits = model.decoder(
                     tokens=branches,
@@ -424,94 +512,84 @@ class Monte_Carlo_Double_Root_Tree:
                     memory_key_padding_mask=mem_masks_n,
                     precursors=precursors_n
                 )
-                #print('i==' + str(i))
-                #self._utils.parse_var(branches, 'E')
-                #self._utils.parse_var(logits)
-                #self._utils.parse_var(perfect_tree, 'B')
-
-                #(logits, tokens) = model.decoder(branches, precursors_n, memories_n, mem_masks_n, partial=True)
+                '''
+                print('logits.shape',end=':')
+                print(logits.shape)
+                '''
 
                 last_logits = logits[:, -1, :]
                 last_probs = torch.softmax(last_logits, dim=-1)
                 last_prob_arr = last_probs.detach().cpu().numpy()
-                #print('last_prob_arr.shape',end=':')
-                #print(last_prob_arr.shape)
+
 
                 for i, key in enumerate(branches_keys):
                     key = key.replace('root', root_residue_list_key)
                     #for j in range(1, last_prob_arr.shape[-1]-1):
                     for j in range(2, last_prob_arr.shape[-1]):
-                        #print('j',end=':')
-                        #print(j)
                         residue = model.tokenizer.detokenize_residue(j)
-                        #print('')
-                        #print('residue',end=':')
-                        #print(residue)
                         key_j = key +'_'+ residue
                         perfect_tree[key_j][0] = last_prob_arr[i][j] #Transformer reward(probability)
-                        #print('prob',end=':')
-                        #print(perfect_tree[key_j][0])
-                        #print('='*100)
-                #self._utils.parse_var(perfect_tree, 'C')
-    
+
+            #return (perfect_tree)
+
             #Beam search to get delta
             if(self.transformer_beam_search_delta and (delta == -4)):
                 leaf_keys = list(self.branches_arr[-1].keys())
                 leaves = list(self.branches_arr[-1].values())
-                
+
                 leaf_keys = [k.replace('root', root_residue_list_key) for k in leaf_keys]
                 leaves = [root_residue_list_nohead+leaf for leaf in leaves]
-    
+
                 # Sizes.
                 batch = len(leaves)  # B
                 length = self._pep_len + 1  # L
                 vocab = model.decoder.vocab_size + 1  # V
                 beam = model.n_beams  # S
                 print('B L V S:', batch, length, vocab, beam)
-    
+
                 # Initialize scores and tokens.
                 scores = torch.full(
                     size=(batch, length, vocab, beam), fill_value=torch.nan
                 )
                 scores = scores.type_as(memories)
-                
+
                 tokens = torch.zeros(batch, length, beam, dtype=torch.int64)
                 tokens = tokens.to(model.decoder.device)
-    
+
                 # Create cache for decoded beams.
                 pred_cache = collections.OrderedDict((i, []) for i in range(batch))
-    
+
                 # Get the first prediction.
                 precursors_n = einops.repeat(precursor, "N I -> (N B) I", B=batch)
                 mem_masks_n = einops.repeat(mem_masks, "N I -> (N B) I", B=batch)
                 memories_n = einops.repeat(memories,  "N I E -> (N B) I E", B=batch)
-    
+
                 precursors_n = precursors_n.to(model.decoder.device)
                 memories_n = memories_n.to(model.decoder.device)
                 mem_masks_n = mem_masks_n.to(model.decoder.device)
-    
+
                 (pred, return_tokens) = model.decoder(leaves, precursors_n, memories_n, mem_masks_n, partial=True)
-    
+
                 return_tokens = einops.repeat(return_tokens, "B L -> B L S", S=beam)
-    
+
                 pep_size = return_tokens.shape[1]
-               
+
                 tokens[:, :pep_size, :] = return_tokens
                 tokens[:, pep_size, :] = torch.topk(pred[:, -1, :], beam, dim=1)[1]
-    
+
                 subpeplen = pred.shape[1]
-    
+
                 scores[:, :subpeplen, :, :] = einops.repeat(pred, "B L V -> B L V S", S=beam)
                 scores[:, :subpeplen-1, :, :] = torch.nan
-    
+
                 # Make all tensors the right shape for decoding.
                 precursors_n = einops.repeat(precursors_n, "B L -> (B S) L", S=beam)
                 mem_masks_n = einops.repeat(mem_masks_n, "B L -> (B S) L", S=beam)
                 memories_n = einops.repeat(memories_n, "B L V -> (B S) L V", S=beam)
-    
+
                 tokens = einops.rearrange(tokens, "B L S -> (B S) L")
                 scores = einops.rearrange(scores, "B L V S -> (B S) L V")
-    
+
                 for step in range(pep_size, self._pep_len):
                     # Terminate beams exceeding the precursor m/z tolerance and track
                     # all finished beams (either terminated or stop token predicted).
@@ -520,7 +598,7 @@ class Monte_Carlo_Double_Root_Tree:
                         beam_fits_precursor,
                         discarded_beams,
                     ) = model.my_finish_beams(tokens, precursors_n, step, tail_mass)
-    
+
                     # Cache peptide predictions from the finished beams (but not the
                     # discarded beams).
                     model.my_cache_finished_beams(
@@ -531,13 +609,13 @@ class Monte_Carlo_Double_Root_Tree:
                         beam_fits_precursor,
                         pred_cache,
                     )
-    
+
                     # Stop decoding when all current beams have been finished.
                     # Continue with beams that have not been finished and not discarded.
                     finished_beams |= discarded_beams
                     if finished_beams.all():
                         break
-    
+
                     # Update the scores.
                     scores[~finished_beams, : step + 2, :], _ = model.decoder(
                         tokens[~finished_beams, : step + 1],
@@ -545,32 +623,34 @@ class Monte_Carlo_Double_Root_Tree:
                         memories_n[~finished_beams, :, :],
                         mem_masks_n[~finished_beams, :],
                     )
-    
+
                     scores[:, :subpeplen-1, :] = torch.nan
-    
+
                     # Find the top-k beams with the highest scores and continue decoding
                     # those.
                     #tokens, scores = model.my_get_topk_beams(
                     tokens, scores = model._get_topk_beams(
                         tokens, scores, finished_beams|beam_fits_precursor, batch, step + 1
                     )
-    
+
                 # Return the peptide with the highest confidence score, within the
                 # precursor m/z tolerance if possible.
                 top_peptide_arr = list(model._get_top_peptide(pred_cache))
-    
+
                 for i,k in enumerate(leaf_keys):
                     if(top_peptide_arr[i]):
                         perfect_tree[k][delta] = top_peptide_arr[i][0][0]
                     else:
                         perfect_tree[k][delta] = 0.0
-    
+
                 gc.collect()
                 torch.cuda.empty_cache()
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        #self._utils.parse_var(perfect_tree)
+        #sys.exit(0)
         return(perfect_tree)
-        
+
     def parse_subtree(self, tree=None):
         #tree.show(filter = lambda x: x.data.ground_truth==True, idhidden=False, data_property='docking')
         children_nids = sorted([x.identifier for x in tree.children('root')])
@@ -594,7 +674,7 @@ class Monte_Carlo_Double_Root_Tree:
             docking_arr.append(dockings)
 
         return(children_nids, path_arr, docking_arr, ground_arr)
-   
+
     def parse_tree(self, tree=None, direction=None, abs_dock=False):
         #print('*'*50+'('+direction+')'+'*'*50)
         #tree.show(filter = lambda x: x.data.ground_truth==True, idhidden=False, data_property='mass')
@@ -615,7 +695,7 @@ class Monte_Carlo_Double_Root_Tree:
         for i,nid in enumerate(nodes_nid_list):
             if(abs_dock):
                 tree[nid].data.docking=abs(docking[i])
-            else:    
+            else:
                 tree[nid].data.docking=docking[i]
 
         #tree.show(filter = lambda x: x.data.ground_truth==True, idhidden=False, data_property='docking')
@@ -641,7 +721,7 @@ class Monte_Carlo_Double_Root_Tree:
         C_tree.create_node(tag='>', identifier='root', data=MCTTS_Node(mass=self._mass_dict['>'], ground_truth=True))
 
         self._remaining_mass = float(self._total_mass) - N_tree['root'].data.mass - C_tree['root'].data.mass - self._proton
-        
+
         N_forest = []
         C_forest = []
         #print('-'*100)
@@ -659,8 +739,8 @@ class Monte_Carlo_Double_Root_Tree:
             (children_nids, path_arr, docking_arr, ground_arr) = self.parse_tree(N_tree, 'left')
             N_forest.append([docking_arr, ground_arr])
             N_tree = self.update_tree(N_tree, i, self._peptide_arr)
-        
-            '''    
+
+            '''
             for j in range(len(ground_arr)):
                 label=ground_arr[j]
                 if(label not in docking_arr_average):
@@ -669,7 +749,7 @@ class Monte_Carlo_Double_Root_Tree:
                     docking_arr_average[label][m] += abs(docking_arr[j][m])
                 l+=1
             '''
-    
+
             C_tree = self.plant_tree(C_tree, -1-i, self._peptide_arr)
             (children_nids, path_arr, docking_arr, ground_arr) = self.parse_tree(C_tree, 'right')
             C_forest.append([docking_arr, ground_arr])
@@ -704,7 +784,7 @@ class Monte_Carlo_Double_Root_Tree:
         #(children_nids, path_arr, docking_arr, ground_arr) = self.parse_tree(tree, direction, True)
         self.parse_tree(tree, direction, True)
 
-        #tree.show(idhidden=False, data_property='docking')        
+        #tree.show(idhidden=False, data_property='docking')
         for i in sorted(hierarchical_nodes.keys(), reverse=True):
             for nid in hierarchical_nodes[i]:
                 children = tree.children(nid)
@@ -747,7 +827,7 @@ class Monte_Carlo_Double_Root_Tree:
             return(query - self._sorted_peptides_mass_arr[-1])
         elif(query <= self._sorted_peptides_mass_arr[0]):
             return(self._sorted_peptides_mass_arr[0] - query)
-        
+
         pos = bisect.bisect_left(self._sorted_peptides_mass_arr, query)
 
         before = self._sorted_peptides_mass_arr[pos-1]
@@ -795,7 +875,7 @@ class Monte_Carlo_Double_Root_Tree:
             diff_min = cp.amin(diff_abs).item()
             #print('diff_min', end=':')
             #print(diff_min, type(diff_min))
-            
+
             if(diff_min<reward):
                 reward=diff_min
         return(reward)
@@ -824,7 +904,7 @@ class Monte_Carlo_Double_Root_Tree:
             if(c.visits > most_visited):
                 most_visited_child = c
                 most_visited = c.visits
-                
+
         if(bestchild == None):
             logger.warn("NO child found, check please!")
         if(most_visited_child == None):
@@ -834,7 +914,7 @@ class Monte_Carlo_Double_Root_Tree:
             bestchild=most_visited_child
 
         return(bestchild)
-    
+
     def EXPAND(self, node, direction=None):
         tried = [c.residue for c in node.children]
         if(tried):
@@ -845,7 +925,7 @@ class Monte_Carlo_Double_Root_Tree:
             node.children = [myNode(residue, self._mass_dict[residue], node.layer-1, parent=node) for residue in untried]
             self.educate_children(node, direction)
         return(True)
-    
+
     def EXPAND_Transformer(self, perfect_tree, node, mode):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         tried = [c.residue for c in node.children]
@@ -1014,15 +1094,18 @@ class Monte_Carlo_Double_Root_Tree:
     '''
 
     def give_birth_to_Transformer(self, precursor, total_mass, N_root, N_memory, N_mem_mask, C_root, C_memory, C_mem_mask, mode, delta):
+    #def give_birth_to_Transformer(self, Transformer_N, Transformer_C, precursor, total_mass, N_root, N_memory, N_mem_mask, C_root, C_memory, C_mem_mask, mode, delta):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
-        
+
         N_tail_mass = total_mass - self._mass_dict['<'] - C_root.mass
         C_tail_mass = total_mass - self._mass_dict['>'] - N_root.mass
 
         start=time.time()
         with torch.no_grad():
             perfect_N_tree = self.plant_perfect_tree(precursor, N_root, N_tail_mass, self.Transformer_N, N_memory, N_mem_mask, mode, delta)
+            #perfect_N_tree = self.plant_perfect_tree(precursor, N_root, N_tail_mass, Transformer_N, N_memory, N_mem_mask, mode, delta)
             perfect_C_tree = self.plant_perfect_tree(precursor, C_root, C_tail_mass, self.Transformer_C, C_memory, C_mem_mask, mode, delta)
+            #perfect_C_tree = self.plant_perfect_tree(precursor, C_root, C_tail_mass, Transformer_C, C_memory, C_mem_mask, mode, delta)
         end=time.time()
         #print('time_consumed in self.plant_perfect_tree with mode '+str(mode),end=':')
         #print(end-start)
@@ -1052,7 +1135,7 @@ class Monte_Carlo_Double_Root_Tree:
                 end=time.time()
                 #print('time_consumed in self.DEFAULTPOLICY_bisect',end=':')
                 #print(end-start)
-            
+
             N_delta = N_leaf.delta[delta]
             C_delta = C_leaf.delta[delta]
 
@@ -1084,32 +1167,18 @@ class Monte_Carlo_Double_Root_Tree:
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         #mode=0 Transformer mode
         #mode=1 Spectrum Probes mode
-
-        '''
-        print('delta',end=':')
-        print(delta)
-        print('self._depth_Transformer',end=':')
-        print(self._depth_Transformer)
-        '''
-
         self.branches_arr = self.make_branches(self._depth_Transformer)
 
         #precursor
         p = precursor[0].tolist()
         total_mass = p[0]
-
-
         #peptide
         true_peptide = self.get_peptide_true(peptide[0])
-        #self._utils.parse_var(self._mass_dict)
-        #self._utils.parse_var(self._meta.tokens)
 
         N_root = myNode(residue='<', mass=self._mass_dict['<'], layer = self._depth_Transformer)
         C_root = myNode(residue='>', mass=self._mass_dict['>'], layer = self._depth_Transformer)
 
         remaining_mass = total_mass - N_root.mass - C_root.mass - self._proton
-
-        #self._utils.parse_var(remaining_mass)
 
         while(remaining_mass > 0.0):
             N_bestchild, C_bestchild = self.give_birth_to_Transformer(
@@ -1133,21 +1202,293 @@ class Monte_Carlo_Double_Root_Tree:
                 break
             C_root = myNode(residue=C_root.residue+','+C_bestchild.residue, mass=C_root.mass+C_bestchild.mass, layer= self._depth_Transformer)
             remaining_mass -= C_bestchild.mass
-       
+
         pred_peptide = N_root.residue.split(',') + C_root.residue.split(',')[::-1]
         pred_peptide = ','.join(pred_peptide)
         pred_peptide = pred_peptide.replace('<,','').replace(',>','')
-        
+
         pred_mass = N_root.mass + C_root.mass
         true_mass = total_mass
         mass_error = abs(pred_mass - true_mass)
-        
+
         result = [true_peptide, pred_peptide, true_peptide==pred_peptide, true_mass, pred_mass, mass_error]
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
-
-        #del N_memory, N_mem_mask, C_memory, C_mem_mask, precursor, peptide, mode, delta
-        #torch.cuda.empty_cache()
         return(result)
 
-    def UCTSEARCH_final(self, spectrum, precursor, peptide):
-        pass
+    def UCTSEARCH_final(self, samples):
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        [N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides, mode, delta] = samples
+        # mode=0 Transformer mode
+        # mode=1 Spectrum Probes mode
+
+        self.branches_arr = self.make_branches(self._depth_Transformer)
+
+        total_masses = precursors[:,0].tolist()
+        true_peptides = [self.get_peptide_true(p) for p in peptides]
+        batch_size = N_memories.shape[0]
+
+        N_roots = [myNode(residue='<', mass=self._mass_dict['<'], layer=self._depth_Transformer) for _ in range(batch_size)]
+        C_roots = [myNode(residue='>', mass=self._mass_dict['>'], layer=self._depth_Transformer) for _ in range(batch_size)]
+
+        remaining_masses = [total_masses[i] - N_roots[i].mass - C_roots[i].mass - self._proton for i in range(batch_size)]
+        gameovers = [x > 0.0 for x in remaining_masses]
+
+        #num_GPUs = torch.cuda.device_count()
+        #num_CPUs = os.cpu_count()
+        #num_workers = min(batch_size, self.num_CPUs // self.num_GPUs)
+        #thread_pool = ThreadPoolExecutor(max_workers=num_workers)
+
+        while(any(gameovers)):
+            futures = {}
+            for batch_idx in range(batch_size):
+                if(gameovers[batch_idx]):
+                    future_N = self.thread_pool.submit(self.seeding, batch_idx, N_roots[batch_idx], mode)
+                    future_C = self.thread_pool.submit(self.seeding, batch_idx, C_roots[batch_idx], mode)
+                    futures[future_N] = (batch_idx, 'N')
+                    futures[future_C] = (batch_idx, 'C')
+
+            completed = 0
+            saplings = {}
+            for future in as_completed(futures):
+                batch_idx, model_type = futures[future]
+                try:
+                    sapling = future.result(timeout=300)  # 5分钟超时
+                    if(batch_idx not in saplings):
+                        saplings[batch_idx] =[None, None]
+                    if(model_type=='N'):
+                        saplings[batch_idx][0] = sapling
+                    elif(model_type=='C'):
+                        saplings[batch_idx][1] = sapling
+                    else:
+                        raise ValueError("Unrecognized model_type:"+model_type)
+                    completed += 1
+                except TimeoutError:
+                    print(f"样本 {batch_idx}{model_type} 处理超时, 无法获取对应的sapling")
+                    saplings[batch_idx] = None
+                except Exception as e:
+                    print(f"样本 {batch_idx}{model_type} 处理错误, 无法获取对应的sapling: {e}")
+                    saplings[batch_idx] = None
+
+            branches_N = []
+            branches_C = []
+
+            last_logits_indices_N = []
+            last_logits_indices_C = []
+
+            total_branches_keys_N = []
+            total_branches_keys_C = []
+
+            perfect_trees_N = {}
+            perfect_trees_C = {}
+
+            repeat_n_N=[]
+            repeat_n_C=[]
+
+            batch_indices = sorted(saplings)
+            if(not batch_indices):
+                break
+
+            for idx in batch_indices:
+                branches_N.extend(saplings[idx][0][0])
+                branches_C.extend(saplings[idx][1][0])
+
+                total_branches_keys_N.extend(saplings[idx][0][1])
+                total_branches_keys_C.extend(saplings[idx][1][1])
+
+                last_logits_indices_N.extend(saplings[idx][0][2])
+                last_logits_indices_C.extend(saplings[idx][1][2])
+
+                perfect_trees_N[idx]=saplings[idx][0][3]
+                perfect_trees_C[idx]=saplings[idx][1][3]
+
+                repeat_n_N.append(saplings[idx][0][4])
+                repeat_n_C.append(saplings[idx][1][4])
+
+            encoded_spectra_N = [N_memories[batch_indices], N_mem_masks[batch_indices], precursors[batch_indices]]
+            pre_forest_N = [branches_N, last_logits_indices_N, total_branches_keys_N, perfect_trees_N, repeat_n_N]
+            perfect_trees_N = self.watering(self.Transformer_N, encoded_spectra_N, pre_forest_N)
+
+            encoded_spectra_C = [C_memories[batch_indices], C_mem_masks[batch_indices], precursors[batch_indices]]
+            pre_forest_C = [branches_C, last_logits_indices_C, total_branches_keys_C, perfect_trees_C, repeat_n_C]
+            perfect_trees_C = self.watering(self.Transformer_C, encoded_spectra_C, pre_forest_C)
+
+            N_bestchildren = [None for _ in range(batch_size)]
+            C_bestchildren = [None for _ in range(batch_size)]
+
+            futures = {}
+            for idx in batch_indices:
+                future = self.thread_pool.submit(self.fructify,
+                    total_masses[idx],
+                    N_roots[idx],
+                    perfect_trees_N[idx],
+                    C_roots[idx],
+                    perfect_trees_C[idx],
+                    mode,
+                    delta
+                )
+                futures[future] = idx
+
+            completed = 0
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    [N_bestchildren[idx], C_bestchildren[idx]] = future.result(timeout=300)  # 5分钟超时
+                    completed += 1
+                except TimeoutError:
+                    print(f"样本 {idx} 处理超时, 无法获取对应的bestchildren")
+                except Exception as e:
+                    print(f"样本 {idx} 处理错误, 无法获取对应的bestchildren: {e}")
+
+            for idx in batch_indices:
+                N_roots[idx] = myNode(residue=N_roots[idx].residue + ',' + N_bestchildren[idx].residue,
+                                mass=N_roots[idx].mass + N_bestchildren[idx].mass,
+                                layer=self._depth_Transformer)
+                remaining_masses[idx] -= N_bestchildren[idx].mass
+                if (remaining_masses[idx] <= 0.0):
+                    break
+
+                C_roots[idx] = myNode(residue=C_roots[idx].residue + ',' + C_bestchildren[idx].residue,
+                                mass=C_roots[idx].mass + C_bestchildren[idx].mass,
+                                layer=self._depth_Transformer)
+                remaining_masses[idx] -= C_bestchildren[idx].mass
+
+            gameovers = [x > 0.0 for x in remaining_masses]
+
+        results=[]
+        for i in range(batch_size):
+            pred_peptide = N_roots[i].residue.split(',') + C_roots[i].residue.split(',')[::-1]
+            pred_peptide = ','.join(pred_peptide)
+            pred_peptide = pred_peptide.replace('<,', '').replace(',>', '')
+
+            pred_mass = N_roots[i].mass + C_roots[i].mass
+            true_mass = total_masses[i]
+            mass_error = abs(pred_mass - true_mass)
+            true_peptide = true_peptides[i]
+            result = [true_peptide, pred_peptide, true_peptide == pred_peptide, true_mass, pred_mass, mass_error]
+            results.append(result)
+
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        return(results)
+
+    def seeding(self, idx, root, mode):
+        #print('\n'+ 'idx:'+str(idx) +' ' +self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+
+        root_residue_list = root.residue.split(',')
+        root_residue_list_nohead = root_residue_list[1:]
+        root_residue_list_key = '_'.join(root_residue_list)
+
+        branches = []
+        total_branches_keys = []
+        last_logits_indices = []
+        perfect_tree = dict()
+
+        if(mode==1):
+           pass
+        if(mode==0):
+            branches_arr_len = len(self.branches_arr)-1
+            repeat_n = 0
+            for i in range(branches_arr_len):
+                branches_dict = self.branches_arr[i]
+                for k,v in branches_dict.items():
+                    e = root_residue_list_nohead + v
+                    if(len(e)>=self._pep_len):
+                        sys.exit('len(e)>=self._pep_len:'+len(e))
+                    branches.append(e)
+                    last_logits_indices.append(i - branches_arr_len)
+
+                    key = k.replace('root', root_residue_list_key)
+                    key_b = str(idx) + '_' + key
+                    total_branches_keys.append(key_b)
+
+                    for residue in self.model_residues.keys():
+                        key_j = key +'_'+ residue
+                        perfect_tree[key_j] = [None, None, None, None, None, 0.0]
+                        #[Transformer reward, Docking reward, Transformer beam delta, Docking beam delta, Bisect delta, 0 delta]
+
+                    repeat_n += 1
+
+            sapling = [branches, total_branches_keys, last_logits_indices,  perfect_tree, repeat_n] #list, list, list, dict
+            #sapling = ['branches', 'total_branches_keys', 'perfect_tree', 'last_logits_indices', mode]
+            #print('\nidx:'+str(idx) +' ' +self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
+            return(sapling)
+
+    def watering(self, model, encoded_spectra, pre_forest):
+        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        [memories, mem_masks, precursors] = encoded_spectra
+        [branches, last_logits_indices, total_branches_keys, perfect_trees, repeat_n_arr] = pre_forest
+
+        if(not all(x == repeat_n_arr[0] for x in repeat_n_arr)):
+            raise ValueError('Number in repeat_n must be all the same!')
+        repeat_n = repeat_n_arr[0]
+
+        with torch.no_grad():
+            device = model.decoder.device
+
+            branches_tensor = model.tokenizer.tokenize(branches).to(device)
+            precursors_tensor = precursors.to(device)
+            memories_tensor = memories.to(device)
+            mem_masks_tensor = mem_masks.to(device)
+
+            precursors_n = einops.repeat(precursors_tensor, "B L -> (B S) L", S=repeat_n)
+            memories_n = einops.repeat(memories_tensor, "B L V -> (B S) L V", S=repeat_n)
+            mem_masks_n = einops.repeat(mem_masks_tensor, "B L -> (B S) L", S=repeat_n)
+
+            logits = model.decoder(
+                tokens=branches_tensor,
+                memory=memories_n,
+                memory_key_padding_mask=mem_masks_n,
+                precursors=precursors_n
+            )
+
+            logits_last_dim = logits.shape[-1]
+
+            indices = torch.tensor(last_logits_indices, device=device)
+            indices += logits.shape[1]
+            indices = indices.unsqueeze(1).unsqueeze(2)
+            indices = indices.expand(-1, -1, logits_last_dim)
+
+            last_logits = torch.gather(logits, dim=1, index=indices)
+            last_logits = last_logits.squeeze(1)
+
+            last_probs = torch.softmax(last_logits, dim=-1)
+            last_prob_arr = last_probs.cpu().numpy()
+
+            for i, key in enumerate(total_branches_keys):
+                idx_str, key_j = key.split("_", maxsplit=1)
+                idx = int(idx_str)
+                for j in range(2, last_prob_arr.shape[-1]):
+                    residue = model.tokenizer.detokenize_residue(j)
+                    key_i = key_j+'_'+residue
+                    perfect_trees[idx][key_i][0] = last_prob_arr[i][j]  # Transformer reward(probability)
+
+        #print('\n'+self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
+        torch.cuda.empty_cache()
+        return(perfect_trees)
+
+    def fructify(self, total_mass, N_root, perfect_N_tree, C_root, perfect_C_tree, mode, delta):
+        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        N_tail_mass = total_mass - self._mass_dict['<'] - C_root.mass
+        C_tail_mass = total_mass - self._mass_dict['>'] - N_root.mass
+
+        i = 0
+        while (i < self._budget):
+            gap_mass = total_mass - N_root.mass - C_root.mass
+
+            (N_leaf, N_tail_mass) = self.TREEPOLICY_Transformer(perfect_N_tree, N_root, gap_mass, mode)
+            (C_leaf, C_tail_mass) = self.TREEPOLICY_Transformer(perfect_C_tree, C_root, gap_mass, mode)
+
+            if (self._ceiling and delta == -2):
+                N_leaf.delta[delta] = self.activation(self.DEFAULTPOLICY_bisect(N_tail_mass))
+                C_leaf.delta[delta] = self.activation(self.DEFAULTPOLICY_bisect(C_tail_mass))
+
+            N_delta = N_leaf.delta[delta]
+            C_delta = C_leaf.delta[delta]
+            self.BACKUP(N_leaf, N_delta)
+            self.BACKUP(C_leaf, C_delta)
+
+            i += 1
+
+        N_bestchild = self.BESTCHILD(node=N_root, scalar=0.0, most=False)
+        C_bestchild = self.BESTCHILD(node=C_root, scalar=0.0, most=False)
+        #print('\n'+self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
+        return (N_bestchild, C_bestchild)

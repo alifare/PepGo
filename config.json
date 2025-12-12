@@ -78,13 +78,13 @@
 			"learning_rate": 5e-4,
 			"weight_decay": 1e-5,
 			"num_sanity_val_steps":0,
-			"num_workers":2,
+			"min_workers":2,
 			"max_epochs":30,
 			"batch_sz":50,
 			"log_every_n_steps":10,
 			"train_batch_size":256,
 			"valid_batch_size":256,
-			"test_batch_size":4,
+			"test_batch_size":8,
 			"check_val_every_n_epoch": 1
 		}
 	},
@@ -98,7 +98,7 @@
 		},
 		"Delta":{
 			"_ceiling":13,
-			"ceiling":11,
+			"ceiling":3,
 			"standard_deviation":0.005,
 			"mode":{
 				"probe_bisect_search":true,

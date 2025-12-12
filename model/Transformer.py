@@ -113,6 +113,16 @@ class SpectrumEncoder(SpectrumTransformerEncoder):
 class PeptideTokenizer(PeptideTokenizer):
     residues = {}
 
+    '''
+    '''
+    def __init__(self, *args, **kwargs):
+        # 先调用父类的初始化
+        super().__init__(*args, **kwargs)
+
+        # 创建扩展的索引
+        self.extended_index = self.index.copy()
+        self.extended_index[''] = 0
+
     #@abstractmethod
     def split(self, sequence: str) -> list[str]:
         return(sequence.split(','))
@@ -146,6 +156,7 @@ class PeptideTokenizer(PeptideTokenizer):
             each sequence.
 
         """
+
         add_start = add_start and self.start_token is not None
         add_stop = add_stop and self.stop_token is not None
         try:
@@ -162,8 +173,14 @@ class PeptideTokenizer(PeptideTokenizer):
                     out.append(tokens)
                     continue
 
-                out.append(torch.tensor([self.index[t] for t in tokens]))
+                #out.append(torch.tensor([self.index[t] for t in tokens]))
 
+                out.append(torch.tensor([self.extended_index[t] for t in tokens]))
+                #print('self.start_token',end=':')
+                #print(self.start_token)
+                #print('out:')
+                #print(type(out))
+                #print(out)
             if to_strings:
                 return out
 
