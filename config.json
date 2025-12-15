@@ -84,14 +84,14 @@
 			"log_every_n_steps":10,
 			"train_batch_size":256,
 			"valid_batch_size":256,
-			"test_batch_size":8,
+			"test_batch_size":5,
 			"check_val_every_n_epoch": 1
 		}
 	},
 	"MCTTS":{
 		"Tree":{
 			"budget":20,
-			"depth":3,
+			"depth":9,
 			"probe_layers":2,
 			"depth_Transformer":3,
 			"depth_Transformer_beam":2

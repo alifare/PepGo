@@ -133,8 +133,7 @@ class GPUWorker:
             self.stats['total_samples'] += batch_size
 
             # 2. 并行处理样本
-            #results = self._parallel_process_samples(
-            results = self._parallel_process_samples2(
+            results = self._parallel_process_samples(
                 N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides
             )
             # 记录处理时间
@@ -151,7 +150,7 @@ class GPUWorker:
             if self.monitor:
                 self.monitor.track_gpu_activity(self.gpu_idx, False)
 
-    def _parallel_process_samples2(self, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
+    def _parallel_process_samples(self, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
         try:
             samples = [
                 N_memories.detach(),
@@ -165,82 +164,6 @@ class GPUWorker:
             ]
             results = self.monte.UCTSEARCH_final(samples)
             return(results)
-
-        except Exception as e:
-            print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
-            return None
-
-    def _parallel_process_samples(self, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
-        """
-        并行处理批次内的所有样本
-        """
-        batch_size = N_memories.shape[0]
-        results = [None for _ in range(batch_size)]
-        futures = {}
-
-        # 提交所有样本处理任务到线程池
-        for i in range(batch_size):
-            future = self.thread_pool.submit(
-                self._process_single_sample,
-            i, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides
-            )
-            futures[future] = i
-
-        # 收集结果 - 使用as_completed提高效率
-        completed = 0
-        start_time = time.time()
-
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                result = future.result(timeout=300)  # 5分钟超时
-                results[idx] = result
-                completed += 1
-
-                # 打印进度
-                if completed % 10 == 0 or completed == batch_size:
-                    elapsed = time.time() - start_time
-                    avg_time = elapsed / completed if completed > 0 else 0
-                    remaining = (batch_size - completed) * avg_time if avg_time > 0 else 0
-
-                    print(f"GPU{self.gpu_idx}: {completed}/{batch_size} "
-                          f"({completed / batch_size * 100:.1f}%), "
-                          f"预计剩余: {remaining:.1f}s\n")
-
-            except TimeoutError:
-                print(f"GPU{self.gpu_idx} 样本 {idx} 处理超时\n")
-                results[idx] = None
-                self.stats['failed_samples'] += 1
-            except Exception as e:
-                print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
-                results[idx] = None
-                self.stats['failed_samples'] += 1
-
-        # 记录处理时间
-        processing_time = time.time() - start_time
-        self.stats['processing_times'].append(processing_time)
-
-        return results
-
-    def _process_single_sample(self, idx, N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides):
-        """
-        处理单个样本
-        """
-        try:
-            # 提取样本数据
-            sample_data = [
-                N_memories[idx:idx + 1].detach(),
-                N_mem_masks[idx:idx + 1].detach(),
-                C_memories[idx:idx + 1].detach(),
-                C_mem_masks[idx:idx + 1].detach(),
-                precursors[idx:idx + 1].detach(),
-                peptides[idx:idx + 1],
-                self.mode,
-                self.delta
-            ]
-            # 执行Monte Carlo搜索
-            result = self.monte.UCTSEARCH_Transformer(sample_data)
-            return result
 
         except Exception as e:
             print(f"GPU{self.gpu_idx} 样本 {idx} 处理错误: {e}\n")
@@ -437,7 +360,7 @@ class MODEL:
         del train_spec_set, valid_spec_set
 
     def predict(self, spec_file=None):
-        mp.set_start_method('spawn', force=True)
+        mp.set_start_method('fork', force=True)
 
         out_file = os.path.basename(spec_file) \
                 +'.depth'+str(self._configs['MCTTS']['Tree']['depth']) \
