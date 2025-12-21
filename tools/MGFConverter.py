@@ -45,6 +45,8 @@ class MGFConverter(object):
 
         self._mass_to_ptm = None
         self._ptm_to_mass = None
+        self.scan_table = None
+
         self._replace_isoleucine_and_leucine_with_X = self._meta.configs['Model']['Peptide']['replace_isoleucine_and_leucine_with_X']
         self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Peptide']['replace_isoleucine_with_leucine']
         self.have_seen = dict()
@@ -132,15 +134,21 @@ class MGFConverter(object):
         nums = re.findall(find_pattern, nums_str)
         nums_size = len(nums)
 
-        mods = [self._mass_to_ptm[n] for n in nums]
+        mods = [self._mass_to_ptm.get(n) for n in nums]
+        if None in mods:
+            return(None, None)
 
         '''
+        print('self._mass_to_ptm',end=':')
+        print(len(self._mass_to_ptm))
+        pp.pprint(self._mass_to_ptm)
         print('name',end=':\t')
         print(name)
         print('mods',end=':\t')
         print(mods)
         print('nums_str',end=':\t')
         print(nums_str)
+        sys.exit()
         '''
 
         if (self._replace_isoleucine_and_leucine_with_X and (name == 'I' or name == 'L')):
@@ -225,6 +233,8 @@ class MGFConverter(object):
             m = re.match(match_pattern, t)
             if(m):
                 token, nums_size = self.replace_mass_with_token(m)
+                if((token is None) or (nums_size is None)):
+                    return(None, None)
                 tokenized_seq.append(token)
                 if(nums_size > max_ptm_on_one_residue):
                     max_ptm_on_one_residue = nums_size
@@ -280,6 +290,11 @@ class MGFConverter(object):
 
         return(mass_to_ptm, ptm_to_mass)
 
+    def readin_mass_scan_table(self, scan_table_file):
+        with open(scan_table_file, 'r', encoding='utf-8') as f:
+            self.scan_table = {line.strip() for line in f}
+        return(self.scan_table)
+
     def batch_write_to_MGF(self, input_mgf, output_mgf=None):
         spectra_buffer = []
         batch_size = 100  # 每100个谱图写入一次
@@ -291,15 +306,21 @@ class MGFConverter(object):
                 #print('spectrum',end=':')
                 #print(type(spectrum))
                 #pp.pprint(spectrum)
+                SCANS = spectrum['params']['scans']
+                if((self.scan_table is not None) and (SCANS not in self.scan_table)):
+                    continue
+
                 seq = spectrum['params']['seq']
-                spectrum['params']['seq'] = self.modify_seq_to_format(seq)
-                if(self._output_format=='PrimeNovo'):
+                tokenized_seq, max_ptm_on_one_residue = self.modify_seq_to_format(seq)
+
+                if(self._output_format=='Casanovo'):
+                    spectrum['params']['seq'] = tokenized_seq
+                elif(self._output_format=='PrimeNovo'):
                     TITLE = spectrum['params']['provenance_filename']+','+ spectrum['params']['provenance_scan']
                     PEPMASS = spectrum['params']['pepmass']
                     CHARGE = spectrum['params']['charge']
-                    SCANS = spectrum['params']['scans']
                     RTINSECONDS = 0.0
-                    SEQ = self.modify_seq_to_format(seq)
+                    SEQ = tokenized_seq
                     spectrum['params']={
                         'title':TITLE,
                         'pepmass':PEPMASS,
@@ -308,9 +329,6 @@ class MGFConverter(object):
                         'seq':SEQ,
                         'rtinseconds':RTINSECONDS
                     }
-                    #pp.pprint(spectrum)
-
-                #sys.exit()
 
                 spectra_buffer.append(spectrum)
 
@@ -328,8 +346,7 @@ class MGFConverter(object):
                     mgf.write(spectra_buffer, f)
 
 
-    def convert_MassiveMGF_to_PrimeNovo(self, mgf_file, dryrun=False):
-        PrimeNovo_mgf_file = mgf_file+'.PrimeNovo.mgf'
+    def convert_MassiveMGF_to_PrimeNovo(self, mgf_file, PrimeNovo_mgf_file, dryrun=False):
         print('raw_mgf',end=':\t')
         print(mgf_file)
         print('PrimeNovo_mgf',end=':\t')
@@ -338,7 +355,6 @@ class MGFConverter(object):
             self.batch_write_to_MGF(mgf_file, PrimeNovo_mgf_file)
 
         return(PrimeNovo_mgf_file)
-
 
     def convert_MassiveMGF_to_PointNovo(self, mgf_file, dryrun=False):
         PointNovo_mgf_file = mgf_file+'.PointNovo.mgf'
@@ -409,7 +425,9 @@ class MGFConverter(object):
             casanovomgf_file=mgf_file+'.casanovo.mgf'
         if(dryrun):
             return(casanovomgf_file)
+        self.batch_write_to_MGF(mgf_file, output_mgf=casanovomgf_file)
 
+        '''
         spectra_buffer = []
         batch_size = 100  # 每100个谱图写入一次
 
@@ -436,6 +454,7 @@ class MGFConverter(object):
                     mgf.write(spectra_buffer, f)
 
         return(casanovomgf_file)
+        '''
 
     def convert_9SpeciesMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):
@@ -496,6 +515,8 @@ class MGFConverter(object):
 
                 seq = spectrum['params']['seq']
                 tokenized_seq, max_ptm_on_one_residue = self.modify_seq_to_format(seq)
+                if((tokenized_seq is None) or (max_ptm_on_one_residue is None)):
+                    continue
                 if(max_ptm_on_one_residue > self._allowed_max_ptm_on_one_residue):
                     continue
 

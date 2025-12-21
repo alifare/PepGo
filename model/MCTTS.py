@@ -34,6 +34,7 @@ import copy
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+import torch.multiprocessing as mp
 from torch.multiprocessing import Process, Manager, Pool
 
 
@@ -101,8 +102,8 @@ class MCTTS_Node(Node):
         return False
 
 class Monte_Carlo_Double_Root_Tree:
-    def __init__(self, meta, configs, Transformer_N=None, Transformer_C=None):
-    #def __init__(self, meta, configs):
+    #def __init__(self, meta, configs, Transformer_N=None, Transformer_C=None):
+    def __init__(self, meta, configs):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         self._utils = UTILS()
         self._meta = meta
@@ -110,6 +111,7 @@ class Monte_Carlo_Double_Root_Tree:
 
         #Meta infomation
         self._proton = self._meta.proton
+        self._neutron = self._meta.neutron
         self._elements = self._meta.elements
         self._mass_dict = self._meta.mass_dict
 
@@ -122,6 +124,7 @@ class Monte_Carlo_Double_Root_Tree:
         self._utils.parse_var(self._tokens_values, 'self._tokens_values')
         '''
         self._sorted_peptides_mass_arr = self._meta.sorted_peptides_mass_arr
+        self._sorted_peptides_mass_arr_len = len(self._sorted_peptides_mass_arr)
 
         #Configs
         self._budget = int(self._configs['MCTTS']['Tree']['budget'])
@@ -149,12 +152,12 @@ class Monte_Carlo_Double_Root_Tree:
         self.probe_bisect_search_delta = self._configs['MCTTS']['Delta']['mode']['probe_bisect_search']
         self.transformer_bisect_search_delta = self._configs['MCTTS']['Delta']['mode']['transformer_bisect_search']
         self.transformer_beam_search_delta = self._configs['MCTTS']['Delta']['mode']['transformer_beam_search']
+        self.isotope_error_range = self._configs['MCTTS']['Tree']['isotope_error_range']
 
         #Transformer models
-        self.Transformer_N = Transformer_N
-        self.Transformer_C = Transformer_C
-        self.model_residues = self.Transformer_N.residues
-
+        #self.Transformer_N = Transformer_N
+        #self.Transformer_C = Transformer_C
+        self.model_residues = self._meta.tokens
 
         #Others
         self._size_upper_limit = pow(len(self._tokens_values), self._ceiling)
@@ -163,7 +166,8 @@ class Monte_Carlo_Double_Root_Tree:
         self.num_GPUs = torch.cuda.device_count()
         self.num_CPUs = os.cpu_count()
         self.max_workers_per_GPU = max(self.test_batch_size, self.num_CPUs // self.num_GPUs)
-        self.thread_pool = ThreadPoolExecutor(max_workers=self.max_workers_per_GPU)
+        self.num_CPU_per_GPU = self.num_CPUs // self.num_GPUs -1
+        #self.thread_pool = ThreadPoolExecutor(max_workers=self.max_workers_per_GPU)
 
     #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
 
@@ -828,13 +832,19 @@ class Monte_Carlo_Double_Root_Tree:
         elif(query <= self._sorted_peptides_mass_arr[0]):
             return(self._sorted_peptides_mass_arr[0] - query)
 
-        pos = bisect.bisect_left(self._sorted_peptides_mass_arr, query)
-
-        before = self._sorted_peptides_mass_arr[pos-1]
-        after = self._sorted_peptides_mass_arr[pos]
-        diff=min(query - before, after - query)
-
-        return(diff)
+        diffs = []
+        for isotope in self.isotope_error_range:
+            query_fluc = query + self._neutron * isotope
+            pos = bisect.bisect_left(self._sorted_peptides_mass_arr, query_fluc)
+            before = self._sorted_peptides_mass_arr[pos - 1]
+            if(pos >= self._sorted_peptides_mass_arr_len):
+                after = before
+            else:
+                after = self._sorted_peptides_mass_arr[pos]
+            diff = min(abs(query_fluc - before), abs(after - query_fluc))
+            diffs.append(diff)
+        min_diff = min(diffs)
+        return(min_diff)
 
     def DEFAULTPOLICY_bisect(self, tail_mass):
         diff=self.search_closest(tail_mass)
@@ -1215,7 +1225,7 @@ class Monte_Carlo_Double_Root_Tree:
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(result)
 
-    def UCTSEARCH_final(self, samples):
+    def UCTSEARCH_final(self, samples, Transformer_N, Transformer_C):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         [N_memories, N_mem_masks, C_memories, C_mem_masks, precursors, peptides, mode, delta] = samples
         # mode=0 Transformer mode
@@ -1231,43 +1241,15 @@ class Monte_Carlo_Double_Root_Tree:
         C_roots = [myNode(residue='>', mass=self._mass_dict['>'], layer=self._depth_Transformer) for _ in range(batch_size)]
 
         remaining_masses = [total_masses[i] - N_roots[i].mass - C_roots[i].mass - self._proton for i in range(batch_size)]
-        gameovers = [x > 0.0 for x in remaining_masses]
+        gaming = [x > 0.0 for x in remaining_masses]
 
-        #num_GPUs = torch.cuda.device_count()
-        #num_CPUs = os.cpu_count()
-        #num_workers = min(batch_size, self.num_CPUs // self.num_GPUs)
-        #thread_pool = ThreadPoolExecutor(max_workers=num_workers)
-
-        while(any(gameovers)):
-            futures = {}
-            for batch_idx in range(batch_size):
-                if(gameovers[batch_idx]):
-                    future_N = self.thread_pool.submit(self.seeding, batch_idx, N_roots[batch_idx], mode)
-                    future_C = self.thread_pool.submit(self.seeding, batch_idx, C_roots[batch_idx], mode)
-                    futures[future_N] = (batch_idx, 'N')
-                    futures[future_C] = (batch_idx, 'C')
-
-            completed = 0
+        while(any(gaming)):
             saplings = {}
-            for future in as_completed(futures):
-                batch_idx, model_type = futures[future]
-                try:
-                    sapling = future.result(timeout=300)  # 5分钟超时
-                    if(batch_idx not in saplings):
-                        saplings[batch_idx] =[None, None]
-                    if(model_type=='N'):
-                        saplings[batch_idx][0] = sapling
-                    elif(model_type=='C'):
-                        saplings[batch_idx][1] = sapling
-                    else:
-                        raise ValueError("Unrecognized model_type:"+model_type)
-                    completed += 1
-                except TimeoutError:
-                    print(f"样本 {batch_idx}{model_type} 处理超时, 无法获取对应的sapling")
-                    saplings[batch_idx] = None
-                except Exception as e:
-                    print(f"样本 {batch_idx}{model_type} 处理错误, 无法获取对应的sapling: {e}")
-                    saplings[batch_idx] = None
+            for batch_idx in range(batch_size):
+                if (gaming[batch_idx]):
+                    future_N = self.seeding(batch_idx, N_roots[batch_idx], mode)
+                    future_C = self.seeding(batch_idx, C_roots[batch_idx], mode)
+                    saplings[batch_idx] = [future_N, future_C]
 
             branches_N = []
             branches_C = []
@@ -1306,18 +1288,19 @@ class Monte_Carlo_Double_Root_Tree:
 
             encoded_spectra_N = [N_memories[batch_indices], N_mem_masks[batch_indices], precursors[batch_indices]]
             pre_forest_N = [branches_N, last_logits_indices_N, total_branches_keys_N, perfect_trees_N, repeat_n_N]
-            perfect_trees_N = self.watering(self.Transformer_N, encoded_spectra_N, pre_forest_N)
+            #self.watering(self.Transformer_N, encoded_spectra_N, pre_forest_N)
+            self.watering(Transformer_N, encoded_spectra_N, pre_forest_N)
 
             encoded_spectra_C = [C_memories[batch_indices], C_mem_masks[batch_indices], precursors[batch_indices]]
             pre_forest_C = [branches_C, last_logits_indices_C, total_branches_keys_C, perfect_trees_C, repeat_n_C]
-            perfect_trees_C = self.watering(self.Transformer_C, encoded_spectra_C, pre_forest_C)
+            #self.watering(self.Transformer_C, encoded_spectra_C, pre_forest_C)
+            self.watering(Transformer_C, encoded_spectra_C, pre_forest_C)
 
             N_bestchildren = [None for _ in range(batch_size)]
             C_bestchildren = [None for _ in range(batch_size)]
 
-            futures = {}
             for idx in batch_indices:
-                future = self.thread_pool.submit(self.fructify,
+                N_bestchildren[idx], C_bestchildren[idx] =self.fructify(
                     total_masses[idx],
                     N_roots[idx],
                     perfect_trees_N[idx],
@@ -1326,18 +1309,6 @@ class Monte_Carlo_Double_Root_Tree:
                     mode,
                     delta
                 )
-                futures[future] = idx
-
-            completed = 0
-            for future in as_completed(futures):
-                idx = futures[future]
-                try:
-                    [N_bestchildren[idx], C_bestchildren[idx]] = future.result(timeout=300)  # 5分钟超时
-                    completed += 1
-                except TimeoutError:
-                    print(f"样本 {idx} 处理超时, 无法获取对应的bestchildren")
-                except Exception as e:
-                    print(f"样本 {idx} 处理错误, 无法获取对应的bestchildren: {e}")
 
             for idx in batch_indices:
                 N_roots[idx] = myNode(residue=N_roots[idx].residue + ',' + N_bestchildren[idx].residue,
@@ -1352,7 +1323,7 @@ class Monte_Carlo_Double_Root_Tree:
                                 layer=self._depth_Transformer)
                 remaining_masses[idx] -= C_bestchildren[idx].mass
 
-            gameovers = [x > 0.0 for x in remaining_masses]
+            gaming = [x > 0.0 for x in remaining_masses]
 
         results=[]
         for i in range(batch_size):
@@ -1466,7 +1437,6 @@ class Monte_Carlo_Double_Root_Tree:
         return(perfect_trees)
 
     def fructify(self, total_mass, N_root, perfect_N_tree, C_root, perfect_C_tree, mode, delta):
-        #print('\n'+self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         N_tail_mass = total_mass - self._mass_dict['<'] - C_root.mass
         C_tail_mass = total_mass - self._mass_dict['>'] - N_root.mass
 
@@ -1490,5 +1460,5 @@ class Monte_Carlo_Double_Root_Tree:
 
         N_bestchild = self.BESTCHILD(node=N_root, scalar=0.0, most=False)
         C_bestchild = self.BESTCHILD(node=C_root, scalar=0.0, most=False)
-        #print('\n'+self.__class__.__name__ + ' ' + sys._getframe().f_code.co_name + ' ended ' + '+' * 100)
+
         return (N_bestchild, C_bestchild)

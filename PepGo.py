@@ -1,5 +1,6 @@
 #The development began around 2019-02-21
 import os
+import sys
 import json
 import pprint as pp
 import argparse
@@ -26,6 +27,7 @@ def main():
     mgfconverter.add_argument("-x", "--xml", type=str, dest='xml',help="XML file along with the mgf file")
     mgfconverter.add_argument('input', type=str, default=None, help="Name of the input mgf file")
     mgfconverter.add_argument('-o', '--output', type=str, dest='output', default=None, help="Name of the output file")
+    mgfconverter.add_argument('-s', '--scan', type=str, dest='scan_table', default=None, help="Name of the scan table")
     mgfconverter.add_argument('-p', '--ptm', type=str, dest='ptm', default=None, help="Name of the mass-ptm table")
     mgfconverter.add_argument('-f', '--outformat', type=str, dest='outformat', default=None, help="Format of output file")
     mgfconverter.add_argument('-i', '--informat', type=str, dest='informat', default=None, help="Format of input file")
@@ -65,12 +67,15 @@ def main():
         #mgf_converter.extract_ptms(args.input, 'tmp.ptm')
         if(args.ptm is not None):
             mgf_converter.readin_mass_ptm_dicts(args.ptm)
-        if(args.informat=='MassIVE_KB' and args.outformat=='CasanovoMGF'):
-            casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input)
+        if(args.scan_table is not None):
+            mgf_converter.readin_mass_scan_table(args.scan_table)
+
+        if(args.informat=='MassIVE_KB' and args.outformat=='Casanovo'):
+            casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input, casanovomgf_file=args.output)
         elif(args.informat=='MassIVE_KB' and args.outformat=='PointNovo'):
             PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveMGF_to_PointNovo(args.input)
         elif (args.informat=='MassIVE_KB' and args.outformat == 'PrimeNovo'):
-            PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(args.input,False)
+            PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(mgf_file=args.input, PrimeNovo_mgf_file=args.output)
         elif(args.informat=='MassIVE_KB' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input, preprocess=True)
             #mgf_converter.convert_spec_to_h5(spec_file)

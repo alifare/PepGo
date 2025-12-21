@@ -82,9 +82,9 @@
 			"max_epochs":30,
 			"batch_sz":50,
 			"log_every_n_steps":10,
-			"train_batch_size":256,
-			"valid_batch_size":256,
-			"test_batch_size":5,
+			"train_batch_size":400,
+			"valid_batch_size":400,
+			"test_batch_size":4,
 			"check_val_every_n_epoch": 1
 		}
 	},
@@ -94,11 +94,12 @@
 			"depth":9,
 			"probe_layers":2,
 			"depth_Transformer":3,
-			"depth_Transformer_beam":2
+			"depth_Transformer_beam":2,
+			"isotope_error_range": [0,1]
 		},
 		"Delta":{
 			"_ceiling":13,
-			"ceiling":3,
+			"ceiling":9,
 			"standard_deviation":0.005,
 			"mode":{
 				"probe_bisect_search":true,

@@ -31,7 +31,8 @@ class META:
 
         #mass
         self._proton = self._elements['H'] - self._elements['e']
-        self._hydroxide_ion = self._elements['H'] + self._elements['O'] + self._elements['e']
+        self._neutron = 1.0034  #The value 1.0034 is used as an approximate substitute for the exact mass of 1.00866491595
+        self._hydroxide_ion = self._elements['H'] + self._elements['O'] - self._elements['e']
 
         #tokens
         self._tokens, self._special_tokens, self._mass_dict = self._make_tokens()
@@ -118,6 +119,10 @@ class META:
     @property
     def proton(self):
         return(self._proton)
+
+    @property
+    def neutron(self):
+        return(self._neutron)
 
     @property
     def empty_residue(self):
