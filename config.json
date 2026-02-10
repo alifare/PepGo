@@ -12,7 +12,7 @@
 			"min_mz":50.0,
 			"max_mz":2500.0,
 			"min_peaks":20,
-        	"max_peaks":150,
+        	"max_peaks":300,
 			"min_intensity":0.01,
 			"max_charge": 10,
 			"remove_precursor_tol": 2.0
@@ -84,7 +84,7 @@
 			"log_every_n_steps":10,
 			"train_batch_size":400,
 			"valid_batch_size":400,
-			"test_batch_size":4,
+			"test_batch_size":2,
 			"check_val_every_n_epoch": 1
 		}
 	},

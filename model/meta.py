@@ -369,9 +369,20 @@ class META:
     def preprocess_spectrum(self, spectrum):
         # Spectrum preprocessing functions.
         self.spectrum = spectrum
+
         self.set_mz_range(min_mz=self._min_mz, max_mz=self._max_mz)
         self.remove_precursor_peak(fragment_tol_mass=self._remove_precursor_tol, fragment_tol_mode='Da')
-        self.scale_intensity(scaling='root', max_intensity=1)
+        '''
+        mz = spectrum['m/z array']
+        intensity = spectrum['intensity array']
+        print('mz')
+        pp.pprint(mz)
+        print('intensity')
+        pp.pprint(intensity)
+        '''
+        return_value = self.scale_intensity(scaling='root', max_intensity=1)
+        if(return_value is None):
+            return(return_value)
         self.filter_intensity(min_intensity=self._min_intensity, max_num_peaks=self._max_peaks)
         self.discard_low_quality(min_peaks=self._min_peaks)
         self.scale_to_unit_norm()
@@ -444,6 +455,8 @@ class META:
             max_rank: Optional[int] = None,
         ):
         intensity = self.spectrum['intensity array']
+        if intensity is None or len(intensity) == 0:
+            return(None)
 
         if scaling == "root":
             intensity = np.power(intensity, 1 / degree).astype(np.float32)
@@ -464,6 +477,7 @@ class META:
             intensity = (intensity * max_intensity / intensity.max()).astype(np.float32)
 
         self.spectrum['intensity array'] = intensity.tolist()
+        return(True)
 
     def filter_intensity(self, min_intensity: float = 0.0, max_num_peaks: Optional[int] = None):
         mz = self.spectrum['m/z array']

@@ -52,6 +52,7 @@ def main():
     predict.add_argument('-T', '--Transformers', type=str, dest='Transformers',default=None,
                         help="Directory containing the two Transformer models(.ckpt)")
     predict.add_argument('input', type=str, default=None, help="Name of the spec file for prediction")
+    predict.add_argument('-o', '--output', type=str, dest='output', default=None, help="Name of the output spec file")
 
     args = parser.parse_args()
     #print('args:')
@@ -71,18 +72,32 @@ def main():
             mgf_converter.readin_mass_scan_table(args.scan_table)
 
         if(args.informat=='MassIVE_KB' and args.outformat=='Casanovo'):
-            casanovomgf_file = mgf_converter.convert_MassiveMGF_to_CasanovoMGF(args.input, casanovomgf_file=args.output)
+            casanovomgf_file = mgf_converter.convert_MassiveKB_to_CasanovoMGF(args.input, casanovomgf_file=args.output)
+        elif (args.informat == '9species' and args.outformat == 'Casanovo'):
+            casanovomgf_file = mgf_converter.convert_9species_to_MGF(input_mgf_file=args.input, output_mgf_file=args.output)
+
         elif(args.informat=='MassIVE_KB' and args.outformat=='PointNovo'):
-            PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveMGF_to_PointNovo(args.input)
-        elif (args.informat=='MassIVE_KB' and args.outformat == 'PrimeNovo'):
-            PointNovo_mgf_file = mgf_converter.convert_MassiveMGF_to_PrimeNovo(mgf_file=args.input, PrimeNovo_mgf_file=args.output)
+            PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_MassiveKB_to_PointNovo(args.input, output_prefix=args.output)
+        elif(args.informat == '9species' and args.outformat == 'PointNovo'):
+            PointNovo_mgf_file, PointNovo_csv_file = mgf_converter.convert_9species_to_PointNovo(args.input, output_prefix=args.output)
+
+        elif(args.informat=='MassIVE_KB' and args.outformat == 'PrimeNovo'):
+            PointNovo_mgf_file = mgf_converter.convert_MassiveKB_to_PrimeNovo(mgf_file=args.input, PrimeNovo_mgf_file=args.output, remove_charge_sign=False)
+        elif(args.informat == '9species' and args.outformat == 'PrimeNovo'):
+            PointNovo_mgf_file = mgf_converter.convert_9species_to_PrimeNovo(input_mgf_file=args.input, output_mgf_file=args.output, remove_charge_sign=False)
+
+        elif(args.informat=='MassIVE_KB' and args.outformat == 'InstaNovo'):
+            InstaNovo_mgf_file = mgf_converter.convert_MassiveKB_to_InstaNovo(mgf_file=args.input, output_prefix=args.output)
+        elif (args.informat == '9species' and args.outformat == 'InstaNovo'):
+            casanovomgf_file = mgf_converter.convert_9species_to_MGF(input_mgf_file=args.input, output_mgf_file=args.output)
+
         elif(args.informat=='MassIVE_KB' and args.outformat=='PepGo'):
-            spec_file = mgf_converter.convert_MassiveKBmgf_to_PepGo(args.input, preprocess=True)
-            #mgf_converter.convert_spec_to_h5(spec_file)
+            spec_file = mgf_converter.convert_MassiveKB_to_PepGo(args.input, spec_file=args.output, preprocess=True)
         elif(args.informat=='9species' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, preprocess=True, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
-        elif (args.informat == 'PepGo' and args.outformat == 'H5'):
+
+        elif(args.informat == 'PepGo' and args.outformat == 'H5'):
             mgf_converter.convert_spec_to_h5(args.input)
         else:
             raise ValueError('Nothing converted')
@@ -106,7 +121,7 @@ def main():
     elif(args.command == "predict"):
         start=time.time()
         model.initialize_models(mode='predict', models_dir=args.Transformers)
-        model.predict(args.input)
+        model.predict(args.input, args.output)
         end=time.time()
         print('Total_time_consumed in prediction:',end=':')
         print(end-start)

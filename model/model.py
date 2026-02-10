@@ -333,10 +333,14 @@ class MODEL:
         self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         #del train_spec_set, valid_spec_set
 
-    def predict(self, spec_file=None):
+    def predict(self, spec_file, output_spec_file=None):
         mp.set_start_method('fork', force=True)
 
-        out_file = os.path.basename(spec_file) \
+        if(output_spec_file is None):
+            output_spec_file = os.path.basename(spec_file)
+
+
+        out_file = output_spec_file \
                 +'.depth'+str(self._configs['MCTTS']['Tree']['depth']) \
                 +'.probe_layers'+str(self._configs['MCTTS']['Tree']['probe_layers']) \
                 +'.depth_Transformer'+str(self._configs['MCTTS']['Tree']['depth_Transformer']) \
@@ -354,12 +358,12 @@ class MODEL:
 
         start_time = time.time()
 
-        num_workers = 4
+        #num_workers = 4
         spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
-            batch_size=self._configs['Model']['Trainer']['test_batch_size'],
-            num_workers= num_workers,
+            batch_size = self._configs['Model']['Trainer']['test_batch_size'],
+            num_workers= self._configs['Model']['Trainer']['test_batch_size'],
             collate_fn=self.spec_collate,
             shuffle=False,
             persistent_workers=False

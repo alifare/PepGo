@@ -12,9 +12,8 @@ import ast
 import operator
 
 from decimal import Decimal, ROUND_HALF_UP
-import re
 
-import re
+from pathlib import Path
 
 
 # 支持的操作符
@@ -50,7 +49,7 @@ class MGFConverter(object):
         self._replace_isoleucine_and_leucine_with_X = self._meta.configs['Model']['Peptide']['replace_isoleucine_and_leucine_with_X']
         self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Peptide']['replace_isoleucine_with_leucine']
         self.have_seen = dict()
-        
+
         self._input_format = input_format
         self._output_format = output_format
 
@@ -66,7 +65,7 @@ class MGFConverter(object):
 
     def set_input_format(self, input_format=None):
         self._input_format = input_format
-        
+
     def set_output_format(self, output_format=None):
         self._output_format = output_format
 
@@ -178,7 +177,10 @@ class MGFConverter(object):
             else:
                 token = name + token
         elif(self._output_format=='PrimeNovo'):
-            token = nums_str
+            if(self._input_format=='MassIVE_KB'):
+                token = nums_str
+            elif(self._input_format=='9species'):
+                token = ''.join(mods)
             if (name == '<'):
                 token = token
             else:
@@ -189,10 +191,22 @@ class MGFConverter(object):
                 token = token
             else:
                 token = name +'+'+ token
-        else:
-            sys.exit('The output_format must be specified')
+        elif (self._output_format == 'InstaNovo'):
+            if (nums_size > 1):
+                nums = self.eval_with_precision_policy(nums_str)
+            else:
+                nums = mods[0]
+            token = '[' + nums + ']'
 
-        if (False and nums_size > 1):
+            if (name == '<'):
+                token = token
+            else:
+                token = name + token
+        else:
+            sys.exit(f'The method of replacing mass with tokens must be specified for the output_format {self._output_format}')
+
+        #if (False and nums_size > 1):
+        if (True):
             if (nums_str not in self.have_seen):
                 self.have_seen[nums_str] = 1
                 print('name', end=':')
@@ -295,7 +309,7 @@ class MGFConverter(object):
             self.scan_table = {line.strip() for line in f}
         return(self.scan_table)
 
-    def batch_write_to_MGF(self, input_mgf, output_mgf=None):
+    def batch_write_to_MGF(self, input_mgf, output_mgf, remove_charge_sign=True):
         spectra_buffer = []
         batch_size = 100  # 每100个谱图写入一次
 
@@ -303,24 +317,35 @@ class MGFConverter(object):
         with MGF(input_mgf) as reader:
             mode = 'w'
             for spectrum in reader:
-                #print('spectrum',end=':')
-                #print(type(spectrum))
-                #pp.pprint(spectrum)
                 SCANS = spectrum['params']['scans']
                 if((self.scan_table is not None) and (SCANS not in self.scan_table)):
                     continue
 
                 seq = spectrum['params']['seq']
                 tokenized_seq, max_ptm_on_one_residue = self.modify_seq_to_format(seq)
+                if ((tokenized_seq is None) or (max_ptm_on_one_residue is None)):
+                    continue
+                if (max_ptm_on_one_residue > self._allowed_max_ptm_on_one_residue):
+                    continue
+                PEPMASS = spectrum['params']['pepmass'][0]
+                spectrum['params']['pepmass'] = PEPMASS
 
                 if(self._output_format=='Casanovo'):
                     spectrum['params']['seq'] = tokenized_seq
+                    #spectrum['params']['pepmass'] = PEPMASS
+                elif(self._output_format=='InstaNovo'):
+                    spectrum['params']['seq'] = tokenized_seq
                 elif(self._output_format=='PrimeNovo'):
-                    TITLE = spectrum['params']['provenance_filename']+','+ spectrum['params']['provenance_scan']
-                    PEPMASS = spectrum['params']['pepmass']
+                    #PEPMASS = spectrum['params']['pepmass'][0]
                     CHARGE = spectrum['params']['charge']
-                    RTINSECONDS = 0.0
                     SEQ = tokenized_seq
+                    if(self._input_format == 'MassIVE_KB'):
+                        TITLE = spectrum['params']['provenance_filename'] + ',' + spectrum['params']['provenance_scan']
+                        RTINSECONDS = 0.0
+                    if(self._input_format == '9species'):
+                        TITLE = spectrum['params']['title']
+                        RTINSECONDS = spectrum['params']['rtinseconds']
+
                     spectrum['params']={
                         'title':TITLE,
                         'pepmass':PEPMASS,
@@ -329,6 +354,8 @@ class MGFConverter(object):
                         'seq':SEQ,
                         'rtinseconds':RTINSECONDS
                     }
+                else:
+                    raise ValueError('Unknown formats')
 
                 spectra_buffer.append(spectrum)
 
@@ -336,31 +363,66 @@ class MGFConverter(object):
                 if len(spectra_buffer) >= batch_size:
                     mode = 'w' if first_batch else 'a'
                     with open(output_mgf, mode) as f:
-                        mgf.write(spectra_buffer, f)
+                        if(remove_charge_sign):
+                            #mgf.write(spectra_buffer, f, param_formatters={'charge': self.charge_formatter})
+                            mgf.write(spectra_buffer, f, key_order = ['title', 'pepmass', 'charge', 'scans', 'rtinseconds'],
+                                      param_formatters={'charge': self.charge_formatter})
+                        else:
+                            mgf.write(spectra_buffer, f, key_order = ['title', 'pepmass', 'charge', 'scans', 'rtinseconds'])
                     spectra_buffer = []
                     first_batch = False
 
             # 写入剩余的谱图
             if spectra_buffer:
                 with open(output_mgf, mode) as f:
-                    mgf.write(spectra_buffer, f)
+                    if (remove_charge_sign):
+                        mgf.write(spectra_buffer, f, key_order = ['title', 'pepmass', 'charge', 'scans', 'rtinseconds'],
+                                  param_formatters={'charge': self.charge_formatter})
+                    else:
+                        mgf.write(spectra_buffer, f, key_order = ['title', 'pepmass', 'charge', 'scans', 'rtinseconds'])
 
+    def convert_MassiveKB_to_InstaNovo(self, mgf_file, output_prefix=None, dryrun=False):
+        if(output_prefix is None):
+            base_path = Path(mgf_file)
+        else:
+            base_path = Path(output_prefix)
+        InstaNovo_mgf_file = base_path.with_suffix(base_path.suffix + ".InstaNovo.mgf")
 
-    def convert_MassiveMGF_to_PrimeNovo(self, mgf_file, PrimeNovo_mgf_file, dryrun=False):
+        if(not dryrun):
+            self.batch_write_to_MGF(input_mgf=mgf_file, output_mgf=InstaNovo_mgf_file, remove_charge_sign=False)
+
+        return(InstaNovo_mgf_file)
+
+    def convert_MassiveKB_to_PrimeNovo(self, mgf_file, PrimeNovo_mgf_file, remove_charge_sign=False, dryrun=False):
         print('raw_mgf',end=':\t')
         print(mgf_file)
         print('PrimeNovo_mgf',end=':\t')
         print(PrimeNovo_mgf_file)
         if(not dryrun):
-            self.batch_write_to_MGF(mgf_file, PrimeNovo_mgf_file)
+            self.batch_write_to_MGF(input_mgf=mgf_file, output_mgf=PrimeNovo_mgf_file, remove_charge_sign=remove_charge_sign)
 
         return(PrimeNovo_mgf_file)
 
-    def convert_MassiveMGF_to_PointNovo(self, mgf_file, dryrun=False):
-        PointNovo_mgf_file = mgf_file+'.PointNovo.mgf'
-        PointNovo_csv_file = mgf_file+'.PointNovo.csv'
+    def charge_formatter(self, param_name, param_value):
+        if param_name.lower() == 'charge':
+            if hasattr(param_value, 'int') and param_value:
+                return 'CHARGE='+str(param_value.int)
+            elif hasattr(param_value, '__len__') and len(param_value) > 0:
+                try:
+                    return 'CHARGE='+str(int(param_value[0]))
+                except:
+                    return 'CHARGE='+str(param_value)
+        return 'CHARGE='+str(param_value)
 
-        print('mgf',end=':\t')
+    def convert_MassiveKB_to_PointNovo(self, mgf_file, output_prefix=None, dryrun=False):
+        if(output_prefix):
+            base_path = Path(output_prefix)
+        else:
+            base_path = Path(mgf_file)
+        PointNovo_mgf_file = base_path.with_suffix(base_path.suffix + ".PointNovo.mgf")
+        PointNovo_csv_file = base_path.with_suffix(base_path.suffix + ".PointNovo.csv")
+
+        print('raw_mgf',end=':\t')
         print(mgf_file)
         print('PointNovo_mgf',end=':\t')
         print(PointNovo_mgf_file)
@@ -379,26 +441,44 @@ class MGFConverter(object):
             with MGF(mgf_file) as reader:
                 mode = 'w'
                 for spectrum in reader:
-                    #print('spectrum')
-                    #pp.pprint(spectrum)
+                    SCANS = spectrum['params']['scans']
+                    if ((self.scan_table is not None) and (SCANS not in self.scan_table)):
+                        continue
+
                     seq = spectrum['params']['seq']
-                    seq = self.modify_seq_to_format(seq)
-                    spectrum['params']['seq'] = seq
+                    tokenized_seq, max_ptm_on_one_residue = self.modify_seq_to_format(seq)
+                    if ((tokenized_seq is None) or (max_ptm_on_one_residue is None)):
+                        continue
+                    if (max_ptm_on_one_residue > self._allowed_max_ptm_on_one_residue):
+                        continue
 
-                    spec_group_id = spectrum['params']['scan']
-                    mz = str(spectrum['params']['pepmass'][0])
-                    z = str(spectrum['params']['charge'][0])
-                    rt_mean = '0'
+                    TITLE = spectrum['params']['provenance_filename'] + ',' + spectrum['params']['provenance_scan']
+                    PEPMASS = spectrum['params']['pepmass'][0]
+                    RTINSECONDS = 0.0
 
-                    scans = spectrum['params']['scans']
+                    CHARGE = spectrum['params']['charge']
+                    if(CHARGE and (len(CHARGE) == 1)):
+                        CHARGE = int(CHARGE[0])
+                    else:
+                        raise ValueError('The precursor charge is missing!')
+
+                    spec_group_id = SCANS
+                    mz = str(PEPMASS)
+                    rt_mean = str(RTINSECONDS)
                     feature_area = '10.0'
                     irt = '0'
                     profile = str(rt_mean) + ':' + str(feature_area)
 
-                    #print(seq)
-                    #print('-'*100)
-                    csv_arr = [spec_group_id, mz, z, rt_mean, seq, scans, profile, feature_area, irt]
+                    csv_arr = [spec_group_id, mz, str(CHARGE), rt_mean, tokenized_seq, SCANS, profile, feature_area, irt]
                     f_out_f1.write(','.join(csv_arr)+'\n')
+
+                    spectrum['params']={
+                        'title':TITLE,
+                        'pepmass':PEPMASS,
+                        'charge':CHARGE,
+                        'scans':SCANS,
+                        'rtinseconds': RTINSECONDS
+                    }
 
                     spectra_buffer.append(spectrum)
 
@@ -406,55 +486,145 @@ class MGFConverter(object):
                     if len(spectra_buffer) >= batch_size:
                         mode = 'w' if first_batch else 'a'
                         with open(PointNovo_mgf_file, mode) as f:
-                            mgf.write(spectra_buffer, f)
+                            mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge','scans' ,'rtinseconds'],
+                                      param_formatters={'charge': self.charge_formatter})
                         spectra_buffer = []
                         first_batch = False
 
                 # 写入剩余的谱图
                 if spectra_buffer:
                     with open(PointNovo_mgf_file, mode) as f:
-                        mgf.write(spectra_buffer, f)
+                        mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge','scans' ,'rtinseconds'],
+                                  param_formatters={'charge': self.charge_formatter})
 
             f_out_s1.close()
             f_out_f1.close()
 
         return(PointNovo_mgf_file, PointNovo_csv_file)
 
-    def convert_MassiveMGF_to_CasanovoMGF(self, mgf_file, casanovomgf_file=None, dryrun=False):
+
+    def convert_9species_to_PointNovo(self, mgf_file, output_prefix=None, dryrun=False):
+        if(output_prefix):
+            base_path = Path(output_prefix)
+        else:
+            base_path = Path(mgf_file)
+        PointNovo_mgf_file = base_path.with_suffix(base_path.suffix + ".PointNovo.mgf")
+        PointNovo_csv_file = base_path.with_suffix(base_path.suffix + ".PointNovo.csv")
+
+        print('raw_mgf',end=':\t')
+        print(mgf_file)
+        print('PointNovo_mgf',end=':\t')
+        print(PointNovo_mgf_file)
+        print('PointNovo_csv',end=':\t')
+        print(PointNovo_csv_file)
+
+
+
+        if(not dryrun):
+            f_out_s1 = open(PointNovo_mgf_file, 'w')
+            f_out_f1 = open(PointNovo_csv_file, 'w')
+            f_out_f1.write('spec_group_id,m/z,z,rt_mean,seq,scans,profile,feature area,irt\n')
+
+            spectra_buffer = []
+            batch_size = 100  # 每100个谱图写入一次
+
+            first_batch = True
+            with (MGF(mgf_file) as reader):
+                mode = 'w'
+                for spectrum in reader:
+                    SCANS = spectrum['params']['scans']
+                    if ((self.scan_table is not None) and (SCANS not in self.scan_table)):
+                        continue
+
+                    seq = spectrum['params']['seq']
+                    tokenized_seq, max_ptm_on_one_residue = self.modify_seq_to_format(seq)
+                    if ((tokenized_seq is None) or (max_ptm_on_one_residue is None)):
+                        continue
+                    if (max_ptm_on_one_residue > self._allowed_max_ptm_on_one_residue):
+                        continue
+
+                    TITLE = spectrum['params']['title']
+                    PEPMASS = spectrum['params']['pepmass'][0]
+                    RTINSECONDS = spectrum['params']['rtinseconds']
+                    CHARGE = spectrum['params']['charge']
+
+
+
+                    if(CHARGE and (len(CHARGE) == 1)):
+                        CHARGE = int(CHARGE[0])
+                    else:
+                        raise ValueError('The precursor charge is missing!')
+
+                    #sys.exit()
+
+                    spec_group_id = SCANS
+                    mz = str(PEPMASS)
+                    rt_mean = str(RTINSECONDS)
+                    feature_area = '10.0'
+                    irt = '0'
+                    profile = str(rt_mean) + ':' + str(feature_area)
+
+                    csv_arr = [spec_group_id, mz, str(CHARGE), rt_mean, tokenized_seq, SCANS, profile, feature_area, irt]
+                    f_out_f1.write(','.join(csv_arr)+'\n')
+
+                    spectrum['params']={
+                        'title':TITLE,
+                        'pepmass':PEPMASS,
+                        'charge':CHARGE,
+                        'scans':SCANS,
+                        'rtinseconds': RTINSECONDS
+                    }
+
+                    spectra_buffer.append(spectrum)
+
+                    # 批量写入以减少内存使用
+                    if len(spectra_buffer) >= batch_size:
+                        mode = 'w' if first_batch else 'a'
+                        with open(PointNovo_mgf_file, mode) as f:
+                            mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge','scans' ,'rtinseconds'],
+                                      param_formatters={'charge': self.charge_formatter})
+                        spectra_buffer = []
+                        first_batch = False
+
+                # 写入剩余的谱图
+                if spectra_buffer:
+                    with open(PointNovo_mgf_file, mode) as f:
+                        mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge','scans' ,'rtinseconds'],
+                                  param_formatters={'charge': self.charge_formatter})
+
+            f_out_s1.close()
+            f_out_f1.close()
+
+        return(PointNovo_mgf_file, PointNovo_csv_file)
+
+
+
+
+    def convert_MassiveKB_to_CasanovoMGF(self, mgf_file, casanovomgf_file=None, dryrun=False):
         if(not casanovomgf_file):
             casanovomgf_file=mgf_file+'.casanovo.mgf'
         if(dryrun):
             return(casanovomgf_file)
-        self.batch_write_to_MGF(mgf_file, output_mgf=casanovomgf_file)
-
-        '''
-        spectra_buffer = []
-        batch_size = 100  # 每100个谱图写入一次
-
-        have_seen=dict()
-        first_batch = True
-        with MGF(mgf_file) as reader:
-            mode = 'w'
-            for spectrum in reader:
-                seq = spectrum['params']['seq']
-                spectrum['params']['seq'] = self.modify_seq_to_format(seq)
-                spectra_buffer.append(spectrum)
-
-                # 批量写入以减少内存使用
-                if len(spectra_buffer) >= batch_size:
-                    mode = 'w' if first_batch else 'a'
-                    with open(casanovomgf_file, mode) as f:
-                        mgf.write(spectra_buffer, f)
-                    spectra_buffer = []
-                    first_batch = False
-
-            # 写入剩余的谱图
-            if spectra_buffer:
-                with open(casanovomgf_file, mode) as f:
-                    mgf.write(spectra_buffer, f)
-
+        self.batch_write_to_MGF(input_mgf=mgf_file, output_mgf=casanovomgf_file)
         return(casanovomgf_file)
-        '''
+
+    def convert_9species_to_MGF(self, input_mgf_file, output_mgf_file=None, dryrun=False):
+        if(not output_mgf_file):
+            output_mgf_file=input_mgf_file+'.'+ self._output_format +'.mgf'
+        if(dryrun):
+            return(output_mgf_file)
+
+        self.batch_write_to_MGF(input_mgf=input_mgf_file, output_mgf=output_mgf_file)
+        return (output_mgf_file)
+
+    def convert_9species_to_PrimeNovo(self, input_mgf_file, output_mgf_file=None, remove_charge_sign=False, dryrun=False):
+        if(not output_mgf_file):
+            output_mgf_file=input_mgf_file+'.PrimeNovo.mgf'
+        if(dryrun):
+            return(output_mgf_file)
+
+        self.batch_write_to_MGF(input_mgf=input_mgf_file, output_mgf=output_mgf_file, remove_charge_sign=remove_charge_sign)
+        return(output_mgf_file)
 
     def convert_9SpeciesMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):
@@ -497,7 +667,7 @@ class MGFConverter(object):
 
         return(spec_file)
 
-    def convert_MassiveKBmgf_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
+    def convert_MassiveKB_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):
             spec_file=mgf_file+'.spec'
         if(dryrun):
