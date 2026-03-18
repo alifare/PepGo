@@ -4,9 +4,14 @@ import re
 import pprint as pp
 import numpy as np
 import h5py, hdf5plugin
+import random
 
 import xmltodict
 import json
+
+from matchms.importing import load_from_msp
+import pyopenms
+
 
 import ast
 import operator
@@ -34,6 +39,7 @@ class MGFConverter(object):
     def __init__(self, meta, input_format=None, output_format=None):
         super().__init__()
         self._meta = meta
+        self._proton = self._meta.proton
         self.pattern1 = r'([A-Z<>])([+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern2 = r'([A-Z<>][+-]\d+(?:\.\d+)?(?:[+-]\d+(?:\.\d+)?)*)'
         self.pattern3 = r'[+-]\d+(?:\.\d+)?'
@@ -502,7 +508,6 @@ class MGFConverter(object):
 
         return(PointNovo_mgf_file, PointNovo_csv_file)
 
-
     def convert_9species_to_PointNovo(self, mgf_file, output_prefix=None, dryrun=False):
         if(output_prefix):
             base_path = Path(output_prefix)
@@ -517,7 +522,6 @@ class MGFConverter(object):
         print(PointNovo_mgf_file)
         print('PointNovo_csv',end=':\t')
         print(PointNovo_csv_file)
-
 
 
         if(not dryrun):
@@ -597,8 +601,76 @@ class MGFConverter(object):
 
         return(PointNovo_mgf_file, PointNovo_csv_file)
 
+    def convert_spec_to_PointNovo(self, spec_file, output_prefix=None, dryrun=False):
+        if(not output_prefix):
+            output_prefix = spec_file
+        base_path = Path(output_prefix)
+        bn = os.path.basename(spec_file)
 
+        PointNovo_mgf_file = base_path.with_suffix(base_path.suffix + ".PointNovo.mgf")
+        PointNovo_csv_file = base_path.with_suffix(base_path.suffix + ".PointNovo.csv")
 
+        print('spec_file',end=':\t')
+        print(spec_file)
+        print('PointNovo_mgf',end=':\t')
+        print(PointNovo_mgf_file)
+        print('PointNovo_csv',end=':\t')
+        print(PointNovo_csv_file)
+
+        if (not dryrun):
+            f_out_f1 = open(PointNovo_csv_file, 'w')
+            f_out_f1.write('spec_group_id,m/z,z,rt_mean,seq,scans,profile,feature area,irt\n')
+
+            first_batch=True
+            f_in = open(spec_file, 'r')
+            for line in f_in:
+                line=line.strip()
+                m=re.search('^#',line)
+                if(m or line==''):
+                    continue
+                arr = line.split('\t')
+
+                scans = arr[0]
+                tokenized_seq = self.replace_ptm(arr[1])
+                mass=float(arr[2])
+                charge=int(arr[3])
+                irt = arr[4]
+                mz = (mass/charge) + self._proton
+
+                spec_group_id = scans
+                #rt_mean = irt
+                rt_mean = 800
+                feature_area = '10.0'
+                profile = str(rt_mean) + ':' + str(feature_area)
+
+                csv_arr = [spec_group_id, str(mz), str(charge), str(rt_mean), tokenized_seq, scans, profile, feature_area, irt]
+                f_out_f1.write(','.join(csv_arr) + '\n')
+
+                spectrum=dict()
+                spectrum['params'] = {
+                    'title': bn+':'+scans,
+                    'pepmass': mz,
+                    'charge': charge,
+                    'scans': scans,
+                    'rtinseconds': irt,
+                }
+
+                spectrum['m/z array'] = []
+                spectrum['intensity array'] = []
+                peaks = arr[-1].split(',')
+                for pair in peaks:
+                    mz, intensity = pair.split(':')
+                    spectrum['m/z array'].append(mz)
+                    spectrum['intensity array'].append(intensity)
+
+                mode = 'w' if first_batch else 'a'
+                with open(PointNovo_mgf_file, mode) as f:
+                    mgf.write([spectrum], f, key_order=['title', 'pepmass', 'charge', 'scans', 'rtinseconds'],
+                              param_formatters={'charge': self.charge_formatter})
+                first_batch = False
+
+            f_in.close()
+            f_out_f1.close()
 
     def convert_MassiveKB_to_CasanovoMGF(self, mgf_file, casanovomgf_file=None, dryrun=False):
         if(not casanovomgf_file):
@@ -797,4 +869,327 @@ class MGFConverter(object):
                 out_line = '\t'.join([str(i) for i in out_line])
                 f_out.write(out_line+'\n')
                 total_peptide_num+=1
+        return(z)
+
+    def convert_msp_to_spec(self, input_file, output_file=None):
+        def write_row(row, f):
+            if row:
+                Scan = row.get('Scan')
+                Peptide = row.get('Peptide')
+                Mass = row.get('Mass')
+                Charge = row.get('Charge')
+                iRT = row.get('iRT')
+                Peaks = row.get('Peaks')
+                Num_peaks = row.get('Num_peaks')
+                Collision = row.get('Collision')
+
+                if Num_peaks != len(Peaks):
+                    ppp = Peptide.replace(',', '')
+                    nnn = len(Peaks)
+                    raise ValueError(f'Number of actual peaks({nnn}) does not match Num_peaks({Num_peaks}) in peptide {ppp}')
+
+                output_row = '\t'.join([Scan, Peptide, Mass, Charge, iRT, Collision, str(Num_peaks), ','.join(Peaks)])
+                f.write(output_row + '\n')
+                row.clear()
+            return row
+
+        def peptide_to_seqarr(peptide, Mods_num, Mods):
+            side_chain = [''] * len(peptide)
+            if (Mods_num):
+                for mod in Mods.split('/'):
+                    (pos, residue, ptm) = mod.split(',')
+                    pos = int(pos)
+                    side_chain[pos] = ptm
+
+            seqarr = []
+            for i, r in enumerate(peptide):
+                if (self._replace_isoleucine_and_leucine_with_X and (r == 'I' or r == 'L')):
+                    r = 'X'
+                ptm = side_chain[i]
+                if (ptm):
+                    r = r + '+' + ptm
+                seqarr.append(r)
+
+            return (seqarr)
+
+        bn=os.path.basename(input_file)
+        if(output_file is None):
+            output_file = bn+'.spec'
+        f_out=open(output_file,'w')
+        prefix=bn
+
+        #f_out.write('#Peptide\tCharge\tMW\tMods_num\tMods\tiRT\tCollision\tID\tNum_peaks\tIons(mz:intensity)')
+        #f_out.write('#Title\tPeptide\tMass\tCharge\tiRT\tMods_num\tMods\tCollision\tID\tNum_peaks\tIons(mz:intensity)')
+        f_out.write('#Scan\tPeptide\tMass\tCharge\tiRT\tCollision\tNum_peaks\tPeaks(mz:intensity)'+'\n')
+
+        bn_arr=bn.split('_')
+        collision=bn_arr[1]
+
+        total_peptide_num=0
+        flag=0
+        id_n=0
+        spec_id='-'
+        peptide='-'
+        charge = None
+        spec_row = dict()
+
+        f_in=open(input_file, 'r')
+        for line in f_in:
+            line=line.strip()
+            m=re.search('^#',line)
+            if(m or line==''):
+                continue
+
+            m=re.search('^Name:',line)
+            if(m):
+                flag=0
+                num_peaks=0
+                total_peptide_num+=1
+                name=line.replace("Name:",'')
+                name=name.strip()
+                m=re.search(r'(.+)/(\d+)$',name)
+
+                write_row(spec_row, f_out)
+
+                if(m):
+                    peptide=m.group(1)
+                    charge=m.group(2)
+                    d = re.findall(r'n*\[(\d+)\]',peptide)
+                    (peptide,subn) = re.subn(r'n*\[(\d+)\]','',peptide)
+                    spec_id = prefix+':'+peptide+':'+str(id_n)
+                    spec_row['peptide_without_ptm'] =  peptide
+                    spec_row['Scan'] = spec_id
+                    spec_row['Charge'] = charge
+
+                    id_n+=1
+                else:
+                    peptide='-'
+                    charge = None
+                    spec_row['peptide_without_ptm'] = peptide
+                    spec_row['Charge'] = charge
+                    sys.exit('Name format error! ( Name:<peptide sequence>/<charge> )')
+            else:
+                if(flag==1):
+                    m=re.search(r'^MW:\s*(\d+(\.\d+)?)$',line)
+                    if(m):
+                        mw=m.group(1)
+                        spec_row['Mass'] = mw
+                    else:
+                        sys.exit('MW missing')
+                elif(flag==2):
+                    comment=line
+                    m=re.search(r'\s+iRT=(\S+)$', comment)
+                    if(m):
+                        spec_row['iRT'] = m.group(1)
+                    else:
+                        sys.exit('iRT missing')
+
+                    m=re.search(r'\s+Mods=(\d+)(/(\S+))?\s', comment)
+                    if(m):
+                        Mods_num = int(m.group(1))
+                        if(Mods_num):
+                            Mods = m.group(3)
+                        else:
+                            Mods='-'
+                        seq_arr = peptide_to_seqarr(spec_row.get('peptide_without_ptm'), Mods_num, Mods)
+                        spec_row['Peptide'] = ','.join(seq_arr)
+                    else:
+                        sys.exit('Mods missing')
+                    spec_row['Collision'] = collision
+                elif(flag==3):
+                    m=re.search(r'^Num peaks:\s+(\d+)$', line)
+                    if(m):
+                        num_peaks=int(m.group(1))
+                        spec_row['Num_peaks'] = num_peaks
+                elif(flag>3):
+                    arr=line.strip().split('\t')
+                    mz=arr[0]
+                    intensity=arr[1]
+                    if('Peaks' not in spec_row):
+                        spec_row['Peaks'] = []
+                    peak = mz+':'+intensity
+                    spec_row['Peaks'].append(peak)
+            flag+=1
+
+        write_row(spec_row, f_out)
+
+        f_in.close()
+        f_out.close()
+        total_peptide_num += 1
         return(total_peptide_num)
+
+    def replace_ptm(self, seq):
+        model_ptms = self._meta.configs['PTMs'][self._output_format]
+        seq_arr=seq.strip().split(',')
+        tmp_arr=seq.strip().split(',')
+        for i,r in enumerate(seq_arr):
+            r_arr = r.split('+')
+            if(len(r_arr)>1):
+                r_arr[1:] = [model_ptms[ptm] for ptm in r_arr[1:]]
+                seq_arr[i]=''.join(r_arr)
+        seq=''.join(seq_arr)
+        if(len(tmp_arr)!=len(seq_arr)):
+            raise ValueError('Length of seq_arr is abnormal after modifcation')
+        return seq
+
+    def convert_spec_to_mgf(self, spec_file, output_mgf_file=None, dryrun=False, remove_charge_sign=True):
+        if(not output_mgf_file):
+            base_path = Path(spec_file)
+            output_mgf_file = base_path.with_suffix(base_path.suffix + '.' + self._output_format +'.mgf')
+
+        print('spec_file',end=':\t')
+        print(spec_file)
+        print('output_mgf_file',end=':\t')
+        print(output_mgf_file)
+
+        if (not dryrun):
+            spectra_buffer = []
+            batch_size = 100  # 每100个谱图写入一次
+            first_batch = True
+            f_in = open(spec_file, 'r')
+            for line in f_in:
+                spectrum = dict()
+                line=line.strip()
+                m=re.search('^#',line)
+                if(m or line==''):
+                    continue
+                arr = line.split('\t')
+
+                if('params' not in spectrum):
+                    spectrum['params']=dict()
+                scans=arr[0]
+                mass=float(arr[2])
+                charge=int(arr[3])
+
+                spectrum['params']['title'] = 'ProteomeTools:'+scans
+                mz = (mass/charge) + self._proton
+                spectrum['params']['pepmass'] = mz
+                spectrum['params']['charge'] = charge
+                spectrum['params']['scans'] = scans
+                spectrum['params']['rinseconds'] = arr[4]
+                spectrum['params']['seq'] = self.replace_ptm(arr[1])
+
+                spectrum['m/z array'] = []
+                spectrum['intensity array'] = []
+                pairs = arr[-1].split(',')
+                for pair in pairs:
+                    mz, intensity = pair.split(':')
+                    spectrum['m/z array'].append(mz)
+                    spectrum['intensity array'].append(intensity)
+
+                spectra_buffer.append(spectrum)
+
+                # 批量写入以减少内存使用
+                if len(spectra_buffer) >= batch_size:
+                    mode = 'w' if first_batch else 'a'
+                    with open(output_mgf_file, mode) as f:
+                        if remove_charge_sign:
+                            mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge', 'scans', 'rtinseconds'],
+                                      param_formatters={'charge': self.charge_formatter})
+                        else:
+                            mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge', 'scans', 'rtinseconds'])
+                    spectra_buffer = []
+                    first_batch = False
+
+            f_in.close()
+
+            if spectra_buffer:
+                mode = 'w' if first_batch else 'a'
+                with open(output_mgf_file, mode) as f:
+                    if remove_charge_sign:
+                        mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge', 'scans', 'rtinseconds'],
+                                  param_formatters={'charge': self.charge_formatter})
+                    else:
+                        mgf.write(spectra_buffer, f, key_order=['title', 'pepmass', 'charge', 'scans', 'rtinseconds'])
+                spectra_buffer = []
+                first_batch = False
+
+        return(output_mgf_file)
+
+    def replace_IL_with_X_in_spec(self, input_spec_file, output_spec_file=None, dryrun=False):
+        print(input_spec_file)
+        print(output_spec_file)
+        if(not output_spec_file):
+            base_path = Path(input_spec_file)
+            output_spec_file = base_path.with_suffix(base_path.suffix + '.' + self._output_format +'.X.spec')
+
+        print('input_spec_file',end=':\t')
+        print(input_spec_file)
+        print('output_spec_file',end=':\t')
+        print(output_spec_file)
+
+        f_out = open(output_spec_file, 'w')
+        if (not dryrun):
+            f_in = open(input_spec_file, 'r')
+            for line in f_in:
+                line=line.strip()
+                m=re.search('^#',line)
+                if(m or line==''):
+                    f_out.write(line+'\n')
+                    continue
+                arr = line.split('\t')
+
+                seq = arr[1]
+                seq_arr = seq.strip().split(',')
+                for i, r in enumerate(seq_arr):
+                    r_arr = r.split('+')
+                    if (len(r_arr) > 1 and (r_arr[0]=='I' or r_arr[0]=='L')):
+                        r_arr[0]='X'
+                        seq_arr[i] = '+'.join(r_arr)
+                    if(r=='I' or r=='L'):
+                        seq_arr[i]='X'
+                arr[1] = ','.join(seq_arr)
+                line='\t'.join(arr)
+                f_out.write(line + '\n')
+            f_in.close()
+        f_out.close()
+
+        return(output_spec_file)
+
+    def unique_spec(self, input_spec_file, output_spec_file=None, dryrun=False):
+        if(not output_spec_file):
+            base_path = Path(input_spec_file)
+            output_spec_file = base_path.with_suffix('.' + self._output_format)
+
+        print('input_spec_file',end=':\t')
+        print(input_spec_file)
+        print('output_spec_file',end=':\t')
+        print(output_spec_file)
+
+        f_out = open(output_spec_file, 'w')
+        if (not dryrun):
+            spec_lines=dict()
+            f_in = open(input_spec_file, 'r')
+            for line in f_in:
+                line=line.strip()
+                m=re.search('^#',line)
+                if(m or line==''):
+                    f_out.write(line+'\n')
+                    continue
+                arr = line.split('\t')
+                seq = arr[1]
+                if(seq not in spec_lines):
+                    spec_lines[seq]=[]
+                spec_lines[seq].append(line)
+            f_in.close()
+
+            #print('spec_lines')
+            #pp.pprint(spec_lines)
+            '''
+            for i in spec_lines:
+                print(i)
+                if(len(spec_lines[i])>1):
+                    pp.pprint(spec_lines[i])
+                print('-'*100)
+            '''
+            keys = list(spec_lines.keys())
+            #pp.pprint(keys[:5])
+            random.shuffle(keys)
+            #pp.pprint(keys[:5])
+            #sys.exit()
+            for k in keys:
+                selected = random.choice(spec_lines[k])
+                f_out.write(selected + '\n')
+        f_out.close()
+
+        return(output_spec_file)

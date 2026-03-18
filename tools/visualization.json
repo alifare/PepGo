@@ -1,0 +1,59 @@
+{
+  "color_scheme": {
+    "name": "Tableau 10 (Academic)",
+    "description": "Professional color palette for academic papers",
+    "colors": [
+      {"hex": "#4E79A7", "name": "Academic Blue 深蓝色"},
+      {"hex": "#F28E2C", "name": "Research Orange 橙色"},
+      {"hex": "#E15759", "name": "Finding Red 红色"},
+      {"hex": "#76B7B2", "name": "Analysis Teal 青色"},
+      {"hex": "#59A14F", "name": "Result Green 绿色"},
+      {"hex": "#EDC949", "name": "Highlight Yellow 黄色"},
+      {"hex": "#AF7AA1", "name": "Support Purple 紫色"},
+      {"hex": "#FF9DA7", "name": "Annotation Pink 粉色"},
+      {"hex": "#9C755F", "name": "Data Brown 棕色"},
+      {"hex": "#BAB0AC", "name": "Neutral Gray 灰色"}
+    ]
+  },
+  "model_colors": {
+    "PepGo": "@color_scheme.colors[0].hex",
+    "Casanovo": "@color_scheme.colors[1].hex",
+    "PointNovo": "@color_scheme.colors[2].hex",
+    "InstaNovo": "@color_scheme.colors[3].hex",
+    "PrimeNovo": "@color_scheme.colors[4].hex"
+  },
+  "model_ptms": {
+    "Casanovo": {
+      "[Oxidation]": "+Oxidation",
+      "[Carbamidomethyl]": "+Carbamidomethyl",
+      "[Deamidated]": "+Deamidated"
+    },
+    "InstaNovo": {
+      "[Oxidation]": "+Oxidation",
+      "[Carbamidomethyl]": "+Carbamidomethyl",
+      "[Deamidated]": "+Deamidated"
+    },
+    "PrimeNovo": {
+      "[+15.995]": "+Oxidation",
+      "[+57.021]": "+Carbamidomethyl",
+      "[+0.984]": "+Deamidated",
+      "[+43.006]": "+Carbamyl",
+      "[+42.011]": "+Acetyl",
+      "[-17.027]": "-NH3",
+      "[+43.006-17.027]": "+25.980265"
+    },
+    "PrimeNovo_mgf": {
+      "+15.995": "+Oxidation",
+      "+57.021": "+Carbamidomethyl",
+      "+0.984": "+Deamidated"
+    },
+    "PointNovo": {
+      "(Oxidation)": "+Oxidation",
+      "(Carbamidomethyl)": "+Carbamidomethyl",
+      "(Deamidated)": "+Deamidated"
+    }
+  },
+  "stat": {
+    "calculate_recall_based_on_pepgo_data":false
+  }
+}

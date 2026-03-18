@@ -7,7 +7,6 @@ import argparse
 import time
 from collections import OrderedDict
 
-from tools.spec import SPEC
 from tools.MGFConverter import MGFConverter
 
 from model.meta import META
@@ -96,9 +95,23 @@ def main():
         elif(args.informat=='9species' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, preprocess=True, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
-
         elif(args.informat == 'PepGo' and args.outformat == 'H5'):
             mgf_converter.convert_spec_to_h5(args.input)
+
+        elif(args.informat=='msp' and args.outformat=='PepGo'):
+            mgf_converter.convert_msp_to_spec(args.input, output_file=args.output)
+        elif(args.informat == 'spec' and args.outformat == 'unique.spec'):
+            mgf_converter.unique_spec(args.input, output_spec_file=args.output)
+        elif(args.informat == 'spec' and args.outformat == 'specX'):
+            mgf_converter.replace_IL_with_X_in_spec(args.input, output_spec_file=args.output)
+        elif(args.informat=='spec' and args.outformat=='PointNovo'):
+            mgf_converter.convert_spec_to_PointNovo(args.input, output_prefix=args.output)
+        elif(args.informat=='spec' and args.outformat=='Casanovo'):
+            mgf_converter.convert_spec_to_mgf(args.input, output_mgf_file=args.output)
+        elif(args.informat=='spec' and args.outformat=='InstaNovo'):
+            mgf_converter.convert_spec_to_mgf(args.input, output_mgf_file=args.output, remove_charge_sign=False)
+        elif(args.informat=='spec' and args.outformat=='PrimeNovo'):
+            mgf_converter.convert_spec_to_mgf(args.input, output_mgf_file=args.output, remove_charge_sign=False)
         else:
             raise ValueError('Nothing converted')
         '''
@@ -109,13 +122,7 @@ def main():
         mgf_converter.convert_mgf_to_InstaNovo(args.input)
         '''
 
-    if(args.command == "tospec"):
-        spec=SPEC(meta)
-        if(args.type=='mgf'):
-            spec.convert_mgf_to_spec(args.input)
-        elif(args.type=='msp'):
-            spec.convert_msp_to_spec(args.input)
-    elif(args.command == "train"):
+    if(args.command == "train"):
         model.initialize_models(mode='train', models_dir=args.Transformers)
         model.train(train_spec=args.train, valid_spec=args.valid)
     elif(args.command == "predict"):

@@ -386,6 +386,10 @@ class Transformer(pl.LightningModule):
         self._mass_dict = self._meta.mass_dict
         self.residues = self._meta.tokens
 
+        #print('self._meta.tokens')
+        #pp.pprint(self._meta.tokens)
+        #sys.exit()
+
         self._utils = UTILS()
         #print('self._meta.tokens',end=':')
         #print(len(self._meta.tokens))

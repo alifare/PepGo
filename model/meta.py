@@ -18,10 +18,21 @@ class META:
         ptm_list = os.path.join(folder_path, 'PTMs.list')
         self._utils = UTILS()
 
-        self._sorted_peptides_mass_arr_cache = None
-
         #configs
         self._configs = configs
+        self._min_mz = self._configs['Model']['Spectrum']['min_mz']
+        self._max_mz = self._configs['Model']['Spectrum']['max_mz']
+
+        self._min_peaks = self._configs['Model']['Spectrum']['min_peaks']
+        self._max_peaks = self._configs['Model']['Spectrum']['max_peaks']
+
+        self._min_intensity = self._configs['Model']['Spectrum']['min_intensity']
+        self._max_charge = self._configs['Model']['Spectrum']['max_charge']
+
+        self._remove_precursor_tol = self._configs['Model']['Spectrum']['remove_precursor_tol']
+        self._replace_isoleucine_and_leucine_with_X = self._configs['Model']['Peptide']['replace_isoleucine_and_leucine_with_X']
+
+        self._sorted_peptides_mass_arr_cache = None
 
         #ptms
         self._ptm_dict = self._read_ptms(ptm_list)
@@ -77,16 +88,7 @@ class META:
         print('-'*100)
         '''
 
-        self._min_mz = self._configs['Model']['Spectrum']['min_mz']
-        self._max_mz = self._configs['Model']['Spectrum']['max_mz']
 
-        self._min_peaks = self._configs['Model']['Spectrum']['min_peaks']
-        self._max_peaks = self._configs['Model']['Spectrum']['max_peaks']
-
-        self._min_intensity = self._configs['Model']['Spectrum']['min_intensity']
-        self._max_charge = self._configs['Model']['Spectrum']['max_charge']
-
-        self._remove_precursor_tol = self._configs['Model']['Spectrum']['remove_precursor_tol']
 
     @property
     def configs(self):
@@ -329,7 +331,12 @@ class META:
         special_tokens['I'] = self._residues.pop('I')
         special_tokens['L'] = self._residues.pop('L')
         special_tokens['U'] = self._residues.pop('U')
-        tokens['X'] = special_tokens['I']
+
+        if (self._replace_isoleucine_and_leucine_with_X):
+            tokens['X'] = special_tokens['I']
+        else:
+            tokens['I'] = special_tokens.pop('I')
+            tokens['L'] = special_tokens.pop('L')
 
         special_tokens['-'] = self._residues.pop('-') #pad token, aka nothing
 
@@ -349,6 +356,10 @@ class META:
                 special_tokens[r]=t
 
         if(set(tokens.keys()) & set(special_tokens.keys())):
+            print('tokens.keys():')
+            print(tokens.keys())
+            print('special_tokens.keys():')
+            print(special_tokens.keys())
             sys.exit("tokens and special_tokens should not have common keys!")
 
         mass_dict = dict()

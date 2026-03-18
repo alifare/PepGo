@@ -19,7 +19,8 @@
 		},
 		"Peptide": {
 			"allowed_max_ptm_on_one_residue": 1,
-			"replace_isoleucine_and_leucine_with_X":true,
+			"_replace_isoleucine_and_leucine_with_X":true,
+			"replace_isoleucine_and_leucine_with_X":false,
 			"replace_isoleucine_with_leucine":true,
 			"_replace_isoleucine_with_leucine":false
 		},
@@ -58,11 +59,10 @@
 			"n_log": 1,
 			"tb_summarywriter": null,
 			"train_label_smoothing": 0.01,
-			"warmup_iters": 100000,
-			"max_iters": 600000,
+			"warmup_iters": 1000,
 			"out_writer": null,
 			"calculate_precision":false,
-			"cosine_schedule_period_iters": 600000
+			"cosine_schedule_period_iters": 86970
 		},
 		"Trainer":{
 			"accelerator": "auto",
@@ -77,13 +77,15 @@
 			"save_top_k":-1,
 			"learning_rate": 5e-4,
 			"weight_decay": 1e-5,
+            "cosine_schedule_period_iters": 86970,
+            "warmup_iters": 1000,
 			"num_sanity_val_steps":0,
 			"min_workers":2,
 			"max_epochs":30,
 			"batch_sz":50,
 			"log_every_n_steps":10,
-			"train_batch_size":400,
-			"valid_batch_size":400,
+			"train_batch_size":128,
+			"valid_batch_size":128,
 			"test_batch_size":2,
 			"check_val_every_n_epoch": 1
 		}
@@ -107,5 +109,27 @@
 				"transformer_beam_search":false
 			}
 		}
-	}
+	},
+    "PTMs": {
+      "Casanovo": {
+        "Oxidation": "[Oxidation]",
+        "Carbamidomethyl": "[Carbamidomethyl]",
+        "Deamidated": "[Deamidated]"
+      },
+      "InstaNovo": {
+        "Oxidation": "[Oxidation]",
+        "Carbamidomethyl": "[Carbamidomethyl]",
+        "Deamidated": "[Deamidated]"
+      },
+      "PrimeNovo": {
+        "Oxidation": "+15.995",
+        "Carbamidomethyl": "+57.021",
+        "Deamidated": "+0.984"
+      },
+      "PointNovo": {
+        "Oxidation": "(Oxidation)",
+        "Carbamidomethyl": "(Carbamidomethyl)",
+        "Deamidated": "(Deamidated)"
+      }
+    }
 }

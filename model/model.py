@@ -265,9 +265,9 @@ class MODEL:
             #spectra.append(torch.tensor(i[0]))
             s=torch.tensor(i[0])
 
-            #int_array = torch.sqrt(s[:,1])
-            #int_array /= torch.linalg.norm(int_array)
-            #s[:,1] = int_array
+            int_array = torch.sqrt(s[:,1])
+            int_array /= torch.linalg.norm(int_array)
+            s[:,1] = int_array
 
             spectra.append(s)
 
@@ -548,7 +548,7 @@ class MODEL:
             Transformer_model = Transformer(**model_params)
             return(Transformer_model)
         elif(mode=='predict'):
-            ckpt_file = os.path.join(model_dir, 'checkpoints', 'last.ckpt')
+            ckpt_file = os.path.join(model_dir, 'checkpoints', 'best.ckpt')
             if(not os.path.exists(ckpt_file)):
                 raise ValueError('Please check the directory of Transormer models!')
             #self._utils.parse_var(device)
