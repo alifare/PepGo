@@ -1,25 +1,17 @@
 #The development began around 2019-02-21
 import os
 import sys
+import glob
 
 import time
 from datetime import datetime
 
-import pandas as pd
-import warnings
 import numpy as np
 np.set_printoptions(suppress=True)
 
-from tqdm import tqdm
 from typing import Union
-
 import torch
 import torch.multiprocessing as mp
-from torch.multiprocessing import Process, Manager, Pool
-from concurrent.futures import ProcessPoolExecutor, as_completed
-
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import lightning
 import lightning.pytorch as pl
@@ -52,7 +44,7 @@ import copy
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #from torch.multiprocessing import Process, Manager, Pool
-
+#
 from .utils import UTILS
 
 class GPUWorker:
@@ -86,14 +78,6 @@ class GPUWorker:
             self.model_C = copy.deepcopy(model_C).to(self.device)
             self.model_N.eval()
             self.model_C.eval()
-
-        '''
-        self.monte = Monte_Carlo_Double_Root_Tree(
-            meta=meta, configs=configs,
-            Transformer_N=self.model_N,
-            Transformer_C=self.model_C
-        )
-        '''
 
         self.monte = Monte_Carlo_Double_Root_Tree(meta=meta, configs=configs)
 
@@ -235,6 +219,8 @@ class MODEL:
         self._proton = self._meta.proton
         self._configs = configs
         self._utils = UTILS()
+        self.Trainer_configs = self._configs.get('Model', {}).get('Trainer', {})
+        self.Pretrain_configs = self._configs.get('Model', {}).get('Pretrain', {})
 
         # Initialized later:
         self.tmp_dir = None
@@ -288,13 +274,51 @@ class MODEL:
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
 
+    def pretrain(self, pretrain_spec=None, prevalid_spec=None):
+        #Training self.Transformer_N
+        print('pretrain_spec',end=':')
+        print(pretrain_spec)
+        print('prevalid_spec',end=':')
+        print(prevalid_spec)
+        pretrain_spec_set = HDF(pretrain_spec)
+        train_spec_set_loader = torch.utils.data.DataLoader(
+            pretrain_spec_set,
+            batch_size=self.Pretrain_configs.get('pretrain_batch_size'),
+            num_workers=self.Pretrain_configs.get('min_workers'),
+            collate_fn=self.spec_collate,
+            shuffle=True,
+        )
+
+        valid_spec_set_loader = None
+        if(prevalid_spec is not None):
+            prevalid_spec_set = HDF(prevalid_spec)
+            valid_spec_set_loader = torch.utils.data.DataLoader(
+                prevalid_spec_set,
+                batch_size=self.Pretrain_configs.get('prevalid_batch_size'),
+                num_workers=self.Pretrain_configs.get('min_workers'),
+                collate_fn=self.spec_collate
+            )
+
+        #sys.exit()
+        self.pretrainer.fit(self.Transformer_encoder, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
+        if self.pretrainer.is_global_zero:
+            best_src = self.pretrainer.checkpoint_callback.best_model_path
+            if best_src:
+                best_link = os.path.join(os.path.dirname(best_src), "best.ckpt")
+                if os.path.lexists(best_link):
+                    os.remove(best_link)
+                os.symlink(os.path.basename(best_src), best_link)
+        #del train_spec_set, valid_spec_set
+        #torch.save(self.Transformer_N.encoder.state_dict(), 'pretrained_encoder.pt')
+        #sys.exit()
+
     def train(self, train_spec=None, valid_spec=None):
         #Training self.Transformer_N
         train_spec_set = HDF(train_spec)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
-            batch_size=self._configs['Model']['Trainer']['train_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['min_workers'],
+            batch_size=self.Trainer_configs.get('train_batch_size'),
+            num_workers=self.Trainer_configs.get('min_workers'),
             collate_fn=self.spec_collate,
             shuffle=True,
         )
@@ -303,8 +327,8 @@ class MODEL:
             valid_spec_set = HDF(valid_spec)
             valid_spec_set_loader = torch.utils.data.DataLoader(
                 valid_spec_set,
-                batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
-                num_workers=self._configs['Model']['Trainer']['min_workers'],
+                batch_size=self.Trainer_configs.get('valid_batch_size'),
+                num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
         #print('Training Transformer_N ...')
@@ -315,8 +339,8 @@ class MODEL:
         train_spec_set = HDF(train_spec, reverse = True)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
-            batch_size=self._configs['Model']['Trainer']['train_batch_size'],
-            num_workers=self._configs['Model']['Trainer']['min_workers'],
+            batch_size=self.Trainer_configs.get('train_batch_size'),
+            num_workers=self.Trainer_configs.get('min_workers'),
             collate_fn=self.spec_collate,
             shuffle=True,
         )
@@ -325,8 +349,8 @@ class MODEL:
             valid_spec_set = HDF(valid_spec, reverse=True)
             valid_spec_set_loader = torch.utils.data.DataLoader(
                 valid_spec_set,
-                batch_size=self._configs['Model']['Trainer']['valid_batch_size'],
-                num_workers=self._configs['Model']['Trainer']['min_workers'],
+                batch_size=self.Trainer_configs.get('valid_batch_size'),
+                num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
         #print('Training Transformer_C ...')
@@ -339,7 +363,6 @@ class MODEL:
         if(output_spec_file is None):
             output_spec_file = os.path.basename(spec_file)
 
-
         out_file = output_spec_file \
                 +'.depth'+str(self._configs['MCTTS']['Tree']['depth']) \
                 +'.probe_layers'+str(self._configs['MCTTS']['Tree']['probe_layers']) \
@@ -349,7 +372,6 @@ class MODEL:
                 +'.budget'+str(self._configs['MCTTS']['Tree']['budget']) \
                 +'.isotope_error_range'+'-'.join([str(i) for i in self.isotope_error_range]) \
                 +'.T_beam_search'+str(int(self._configs['MCTTS']['Delta']['mode']['transformer_beam_search'])) \
-                +'.beam'+str(self._configs['Model']['Transformer']['n_beams']) \
                 +'.gap_mass.result.txt'
         f_out = open(out_file,'w')
         f_out.write('#true_peptide\tpred_peptide\tmatched\ttrue_mass\tpred_mass\tmass_error\n')
@@ -362,8 +384,8 @@ class MODEL:
         spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
-            batch_size = self._configs['Model']['Trainer']['test_batch_size'],
-            num_workers= self._configs['Model']['Trainer']['test_batch_size'],
+            batch_size = self.Trainer_configs.get('test_batch_size'),
+            num_workers= self.Trainer_configs.get('test_batch_size'),
             collate_fn=self.spec_collate,
             shuffle=False,
             persistent_workers=False
@@ -400,155 +422,209 @@ class MODEL:
             torch.cuda.empty_cache()
         print("推理完成！")
 
-    def configure_callbacks(self, model_dir: str):
-        curr_filename = self.current_datetime + "-{epoch:02d}-{step}-{valid_CELoss:.3f}"
+    def configure_callbacks(self, mode:str =None, model_dir:str =None):
         checkpoints_dir = os.path.join(model_dir, 'checkpoints')
+        hist_cb = None
 
-        # 2. 历史快照（验证损失排序），可留多个
-        hist_cb = ModelCheckpoint(
-            filename=curr_filename,
-            every_n_epochs=1,
-            dirpath=checkpoints_dir,
-            monitor="valid_CELoss",
-            mode="min",
-            save_top_k=self._configs['Model']['Trainer']['save_top_k'],
-            save_last='link',  # Added by ChangYuqi
-            enable_version_counter=False,  # Added by ChangYuqi
-        )
+        if(mode=='pretrain'):
+            hist_cb = ModelCheckpoint(
+                dirpath=checkpoints_dir,
+                filename='pretrained-encoder-{epoch:02d}-{pretrain_contrastive_loss:.4f}',
+                every_n_epochs=1,
+                monitor="pretrain_val_contrastive_loss",
+                mode="min",
+                save_top_k=self.Pretrain_configs.get('save_top_k', 1),
+                enable_version_counter=False,  # Added by ChangYuqi
+            )
+        elif(mode=='train'):
+            hist_cb = ModelCheckpoint(
+                dirpath=checkpoints_dir,
+                filename=self.current_datetime + "-{epoch:02d}-{step}-{valid_CELoss:.3f}",
+                every_n_epochs=1,
+                monitor="valid_CELoss",
+                mode="min",
+                save_top_k=self.Trainer_configs.get('save_top_k', 1),
+                save_last='link',  # Added by ChangYuqi
+                enable_version_counter=False,  # Added by ChangYuqi
+            )
+
         callbacks = [hist_cb]
 
         return(callbacks)
 
-    def initialize_trainer(self, mode: str, model_dir: str) -> None:
-        trainer_cfg = dict(
-            accelerator=self._configs['Model']['Trainer']['accelerator'],
-            devices=self._configs['Model']['Trainer']['devices'],
-            enable_checkpointing=False,
-            precision=self._configs['Model']['Trainer']['precision'],
-            logger=False,
-        )
+    def initialize_trainer(self, mode: str, model_dir: str):
+        devices = self.Trainer_configs.get('devices', 'auto')
 
-        if(mode=='train'):
-            devices = "auto" if(self._configs['Model']['Trainer']['devices'] is None) else self._configs['Model']['Trainer']['devices']
-            callbacks = self.configure_callbacks(model_dir=model_dir)
+        # ===== 1. 先创建 loggers =====
+        loggers = []
 
-            # Configure loggers.
-            loggers = []
-
-            if self._configs['Model']['Trainer']['log_metrics']:
-                loggers.append(
-                    lightning.pytorch.loggers.CSVLogger(
-                        save_dir=model_dir, version=self.current_datetime, name="csv_logs"
-                    )
+        if self.Trainer_configs.get('log_metrics'):
+            loggers.append(
+                lightning.pytorch.loggers.CSVLogger(
+                    save_dir=model_dir,
+                    version=self.current_datetime,
+                    name="csv_logs"
                 )
-
-            if self._configs['Model']['Trainer']['tb_summarywriter']:
-                loggers.append(
-                    lightning.pytorch.loggers.TensorBoardLogger(
-                        save_dir=model_dir, version=self.current_datetime, name="tensorboard"
-                    )
-                )
-
-            if len(loggers) > 0:
-                callbacks.append(
-                    LearningRateMonitor(
-                        log_momentum=True, log_weight_decay=True
-                    ),
-                )
-
-            additional_cfg = dict(
-                devices=devices,
-                max_epochs=self._configs['Model']['Trainer']['max_epochs'],
-                num_sanity_val_steps=self._configs['Model']['Trainer']['num_sanity_val_steps'],
-                accumulate_grad_batches=self._configs['Model']['Trainer']['accumulate_grad_batches'],
-                gradient_clip_val=self._configs['Model']['Trainer']['gradient_clip_val'],
-                gradient_clip_algorithm=self._configs['Model']['Trainer']['gradient_clip_algorithm'],
-                callbacks=callbacks,
-                check_val_every_n_epoch=self._configs['Model']['Trainer'].get('check_val_every_n_epoch', 1),
-                enable_checkpointing=True,
-                logger=loggers,
-                strategy=self._get_strategy(),
             )
 
-            trainer_cfg.update(additional_cfg)
-        elif(mode=='predict'):
-            devices = "auto"
+        if self.Trainer_configs.get('tb_summarywriter'):
+            loggers.append(
+                lightning.pytorch.loggers.TensorBoardLogger(
+                    save_dir=model_dir,
+                    version=self.current_datetime,
+                    name="tensorboard"
+                )
+            )
+
+        # ===== 2. 创建 callbacks =====
+        callbacks = self.configure_callbacks(mode=mode, model_dir=model_dir)
+
+        if len(loggers) > 0:
+            callbacks.append(
+                LearningRateMonitor(log_momentum=True, log_weight_decay=True),
+            )
+
+        # ===== 3. 如果有 logger，添加 LearningRateMonitor =====
+        if len(loggers) > 0:
+            callbacks.append(
+                LearningRateMonitor(log_momentum=True, log_weight_decay=True)
+            )
+
+        # ===== 4. 基础配置 =====
+        trainer_cfg = dict(
+            accelerator=self.Trainer_configs.get('accelerator'),
+            devices=devices,
+            enable_checkpointing=False,
+            precision=self.Trainer_configs.get('precision'),
+            logger=False,  # 临时值，后面会被覆盖
+        )
+        additional_cfg = dict()
+
+        # ===== 5. 模式特定配置 =====
+        if mode == 'pretrain':
+            additional_cfg = dict(
+                max_epochs=self.Pretrain_configs.get('max_epochs'),
+                callbacks=callbacks,
+                check_val_every_n_epoch=self.Pretrain_configs.get('check_val_every_n_epoch', 1),
+                enable_checkpointing=True,
+                strategy=self._get_strategy(),
+                logger=loggers if loggers else False,
+            )
+        elif mode == 'train':
+            additional_cfg = dict(
+                max_epochs=self.Trainer_configs.get('max_epochs'),
+                num_sanity_val_steps=self.Trainer_configs.get('num_sanity_val_steps'),
+                accumulate_grad_batches=self.Trainer_configs.get('accumulate_grad_batches'),
+                gradient_clip_val=self.Trainer_configs.get('gradient_clip_val'),
+                gradient_clip_algorithm=self.Trainer_configs.get('gradient_clip_algorithm'),
+                callbacks=callbacks,
+                check_val_every_n_epoch=self.Trainer_configs.get('check_val_every_n_epoch', 1),
+                enable_checkpointing=True,
+                logger=loggers if loggers else False,  # 使用创建好的 loggers
+                strategy=self._get_strategy(),
+            )
+        elif mode == 'predict':
             additional_cfg = dict(
                 devices=devices,
                 accelerator="auto",
                 enable_progress_bar=True,
                 strategy="auto"
-                #strategy="ddp_spawn"
-                #strategy = self._get_strategy()
             )
-            trainer_cfg.update(additional_cfg)
         else:
-            raise ValueError('The mode must be train or predict!')
+            raise ValueError('The mode must be pretrain, train, or predict!')
 
-        #self._utils.parse_var(trainer_cfg)
+        # ===== 6. 合并配置 =====
+        trainer_cfg.update(additional_cfg)
 
+        # ===== 7. 创建 trainer =====
         trainer = pl.Trainer(**trainer_cfg)
-        return(trainer)
+        return trainer
 
-    def initialize_models(self, mode=None, models_dir=None) -> None:
-        model_dir_N = os.path.join(models_dir, 'ckpt_N')
-        model_dir_C = os.path.join(models_dir, 'ckpt_C')
-        self._utils.make_dir(model_dir_N)
-        self._utils.make_dir(model_dir_C)
+    def initialize_models(self, mode=None, models_dir=None, prescan_spec=None) -> None:
 
-        self.trainer_N = self.initialize_trainer(mode=mode, model_dir=model_dir_N)
-        self.trainer_C = self.initialize_trainer(mode=mode, model_dir=model_dir_C)
+        def prescan(data_loader):
+            if data_loader is None:
+                logger.warning("data_loader is None, using default schedule values")
+                return
 
-        self.Transformer_N = self.initialize_one_model(mode=mode, model_dir=model_dir_N)
-        self.Transformer_C = self.initialize_one_model(mode=mode, model_dir=model_dir_C)
+            # 计算真实的总步数
+            steps_per_epoch = len(data_loader)
+            max_epochs = self.Pretrain_configs.get('max_epochs') if(mode=='pretrain') else self.Trainer_configs.get('max_epochs')
+            total_steps = steps_per_epoch * max_epochs
+
+            # 根据模式选择预热比例
+            if(mode=='pretrain'):
+                warmup_ratio = self.Pretrain_configs.get('warmup_ratio', 0.12)
+            else:
+                warmup_ratio = self.Trainer_configs.get('warmup_ratio', 0.06)
+
+            # 自动计算正确的参数
+            correct_warmup_iters = int(total_steps * warmup_ratio)
+            correct_cosine_period = total_steps
+
+            if(mode=='pretrain'):
+                user_warmup = self.Pretrain_configs.get('warmup_iters')
+                if(user_warmup is None):
+                    self.Pretrain_configs['warmup_iters'] = correct_warmup_iters
+
+                user_cosine = self.Pretrain_configs.get('cosine_schedule_period_iters')
+                if(user_cosine is None):
+                    self.Pretrain_configs['cosine_schedule_period_iters'] = correct_cosine_period
+            else:
+                user_warmup = self.Trainer_configs.get('warmup_iters')
+                if(user_warmup is None):
+                    self.Trainer_configs['warmup_iters'] = correct_warmup_iters
+
+                user_cosine = self.Trainer_configs.get('cosine_schedule_period_iters')
+                if(user_cosine is None):
+                    self.Trainer_configs['cosine_schedule_period_iters'] = correct_cosine_period
+
+        if(mode=='pretrain'):
+            model_dir_encoder = os.path.join(models_dir, 'ckpt_pretrain')
+            self._utils.make_dir(model_dir_encoder)
+
+            prescan_spec_set = HDF(prescan_spec)
+            prescan_spec_set_loader = torch.utils.data.DataLoader(
+                prescan_spec_set,
+                batch_size=self.Pretrain_configs.get('pretrain_batch_size'),
+                num_workers=self.Pretrain_configs.get('min_workers'),
+                collate_fn=self.spec_collate,
+                shuffle=True,
+            )
+
+            prescan(prescan_spec_set_loader)
+            del prescan_spec_set, prescan_spec_set_loader
+
+            self.pretrainer = self.initialize_trainer(mode=mode, model_dir=model_dir_encoder)
+            self.Transformer_encoder = self.initialize_one_model(mode=mode, model_dir=model_dir_encoder)
+
+        elif(mode=='train' or mode=='predict'):
+            model_dir_N = os.path.join(models_dir, 'ckpt_N')
+            model_dir_C = os.path.join(models_dir, 'ckpt_C')
+            self._utils.make_dir(model_dir_N)
+            self._utils.make_dir(model_dir_C)
+
+            self.trainer_N = self.initialize_trainer(mode=mode, model_dir=model_dir_N)
+            self.trainer_C = self.initialize_trainer(mode=mode, model_dir=model_dir_C)
+
+            self.Transformer_N = self.initialize_one_model(mode=mode, model_dir=model_dir_N)
+            self.Transformer_C = self.initialize_one_model(mode=mode, model_dir=model_dir_C)
+
 
     def initialize_one_model(self, mode=None, model_dir=None) -> None:
-        model_params = dict(
-            precursor_mass_tol=self._configs["Model"]["Transformer"]['precursor_mass_tol'],
-            isotope_error_range=tuple(self._configs['Model']['Transformer']['isotope_error_range']),
-            min_peptide_len=self._configs["Model"]["Transformer"]['min_peptide_len'],
-            top_match=self._configs["Model"]["Transformer"]['top_match'],
-            n_beams=self._configs["Model"]["Transformer"]['n_beams'],
-            n_log=self._configs["Model"]["Transformer"]['n_log'],
-            max_charge=self._configs["Model"]["Transformer"]['max_charge'],
-            dim_model=self._configs["Model"]["Transformer"]['dim_model'],
-            n_head=self._configs["Model"]["Transformer"]['n_head'],
-            dim_feedforward=self._configs["Model"]["Transformer"]['dim_feedforward'],
-            n_layers=self._configs["Model"]["Transformer"]['n_layers'],
-            dropout=self._configs["Model"]["Transformer"]['dropout'],
-            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
-            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
-            lr=self._configs['Model']['Trainer']['learning_rate'],
-            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
-            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            out_writer=self.writer,
-            tokenizer=None,
-            meta=self._meta
-        )
-
-        loaded_model_params = dict(
-            precursor_mass_tol=self._configs['Model']['Transformer']['precursor_mass_tol'],
-            isotope_error_range=self._configs['Model']['Transformer']['isotope_error_range'],
-            min_peptide_len=self._configs['Model']['Transformer']['min_peptide_len'],
-            max_peptide_len=self._configs["Model"]["Transformer"]['max_length'],
-            top_match=self._configs['Model']['Transformer']['top_match'],
-            n_beams=self._configs['Model']['Transformer']['n_beams'],
-            n_log=self._configs['Model']['Transformer']['n_log'],
-            warmup_iters=self._configs['Model']['Transformer']['warmup_iters'],
-            cosine_schedule_period_iters=self._configs['Model']['Transformer']['cosine_schedule_period_iters'],
-            lr=self._configs['Model']['Trainer']['learning_rate'],
-            weight_decay=self._configs['Model']['Trainer']['weight_decay'],
-            train_label_smoothing=self._configs['Model']['Transformer']['train_label_smoothing'],
-            out_writer=self.writer,
-            meta=self._meta
-        )
+        model_params = dict(configs=self._configs, meta=self._meta)
+        loaded_model_params = dict(configs=self._configs, meta=self._meta)
 
         loaded_model=None
-        if(mode=='train'):
-            Transformer_model = Transformer(**model_params)
-            return(Transformer_model)
-        elif(mode=='predict'):
-            ckpt_file = os.path.join(model_dir, 'checkpoints', 'best.ckpt')
+        if mode== 'pretrain':
+            loaded_model = Transformer(pretrain_mode=True, **model_params)
+        if mode== 'train':
+            loaded_model = Transformer(**model_params)
+        elif mode== 'predict':
+            #ckpt_file = os.path.join(model_dir, 'checkpoints', 'best.ckpt')
+            ckpt_files = glob.glob(os.path.join(model_dir, 'checkpoints', 'best*.ckpt'))
+            ckpt_file = ckpt_files[0] if ckpt_files else None
+            print('The .ckpt file loaded: '+ckpt_file)
             if(not os.path.exists(ckpt_file)):
                 raise ValueError('Please check the directory of Transormer models!')
             #self._utils.parse_var(device)
@@ -580,10 +656,8 @@ class MODEL:
                     raise RuntimeError(
                         "Weights file incompatible with the current version of PepGo."
                     )
-        else:
-            sys.exit(0)
 
-        return(loaded_model)
+        return loaded_model
 
     def _get_strategy(self) -> Union[str, DDPStrategy]:
         """Get the strategy for the Trainer.
@@ -598,9 +672,9 @@ class MODEL:
             The strategy parameter for the Trainer.
 
         """
-        if self._configs['Model']['Trainer'] in ("cpu", "mps"):
+        if self.Trainer_configs.get('accelerator') in ("cpu", "mps"):
             return "auto"
-        elif self._configs['Model']['Trainer']['devices'] == 1:
+        elif self.Trainer_configs.get('devices') == 1:
             return "auto"
         elif torch.cuda.device_count() > 1:
             return DDPStrategy(find_unused_parameters=False, static_graph=True)

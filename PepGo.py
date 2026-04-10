@@ -38,6 +38,14 @@ def main():
     tospec.add_argument('input', type=str, default=None, help="Name of the file to input")
     #specto = subparsers.add_parser("specto", help="Convert .spec file to other formats")
 
+
+    #Pretrain arguments
+    pretrain = subparsers.add_parser('pretrain', help='Pretraining a Transformer encoder')
+    pretrain.add_argument('-T', '--Transformers', type=str, dest='Transformers',default='ckpt',
+                        help="Directory to save a Transformer encoder model(./ckpt)")
+    pretrain.add_argument('-t', '--pretrain', type=str, dest='pretrain',default=None, help="Spec file for pre-training")
+    pretrain.add_argument('-v', '--prevalid', type=str, dest='prevalid',default=None, help="Spec file for pre-validation")
+
     #Train arguments
     train = subparsers.add_parser('train', help='Training Transformer models')
     #train.add_argument('input', type=str, default=None, help="Name of the spec file for training")
@@ -95,6 +103,9 @@ def main():
         elif(args.informat=='9species' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, preprocess=True, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
+        elif(args.informat=='pretrainMGF' and args.outformat=='PepGo'):
+            spec_file = mgf_converter.convert_pretrainMGF_to_PepGo(args.input, spec_file=args.output)
+            mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat == 'PepGo' and args.outformat == 'H5'):
             mgf_converter.convert_spec_to_h5(args.input)
 
@@ -122,7 +133,11 @@ def main():
         mgf_converter.convert_mgf_to_InstaNovo(args.input)
         '''
 
-    if(args.command == "train"):
+    if(args.command == "pretrain"):
+        model.initialize_models(mode='pretrain', models_dir=args.Transformers, prescan_spec=args.pretrain)
+        #sys.exit()
+        model.pretrain(pretrain_spec=args.pretrain, prevalid_spec=args.prevalid)
+    elif(args.command == "train"):
         model.initialize_models(mode='train', models_dir=args.Transformers)
         model.train(train_spec=args.train, valid_spec=args.valid)
     elif(args.command == "predict"):

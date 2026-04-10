@@ -53,7 +53,7 @@ class MGFConverter(object):
         self.scan_table = None
 
         self._replace_isoleucine_and_leucine_with_X = self._meta.configs['Model']['Peptide']['replace_isoleucine_and_leucine_with_X']
-        self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Peptide']['replace_isoleucine_with_leucine']
+        #self._replace_isoleucine_with_leucine = self._meta.configs['Model']['Peptide']['replace_isoleucine_with_leucine']
         self.have_seen = dict()
 
         self._input_format = input_format
@@ -697,6 +697,42 @@ class MGFConverter(object):
 
         self.batch_write_to_MGF(input_mgf=input_mgf_file, output_mgf=output_mgf_file, remove_charge_sign=remove_charge_sign)
         return(output_mgf_file)
+
+    def convert_pretrainMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
+        if(not spec_file):
+            spec_file=mgf_file+'.spec'
+        if(dryrun):
+            return(spec_file)
+
+        f_out=open(spec_file, 'w')
+        f_out.write('#Scans\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
+
+        with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
+            for spectrum in reader:
+                if(preprocess):
+                    spectrum = self._meta.preprocess_spectrum(spectrum)
+                if(spectrum is None):
+                    continue
+
+                mz_array = spectrum['m/z array']
+                it_array = spectrum['intensity array']
+                assert len(mz_array) == len(it_array), 'Length of mz array and intensity array mismatch!'
+
+                scans = spectrum['params'].get('scans', None)
+                charge = int(spectrum['params']['charge'][0])
+
+                pepmass = spectrum['params']['pepmass'][0]
+                precursor_mass = pepmass * charge - self._meta.proton * charge
+
+                peaks=[]
+                for mz, it in zip(mz_array, it_array):
+                    peaks.append(str(mz)+':'+str(it))
+                peaks=','.join(peaks)
+                output_line = [str(scans), '-', str(precursor_mass), str(charge), '-', peaks]
+                f_out.write('\t'.join(output_line) + '\n')
+        f_out.close()
+
+        return(spec_file)
 
     def convert_9SpeciesMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):

@@ -12,17 +12,15 @@
 			"min_mz":50.0,
 			"max_mz":2500.0,
 			"min_peaks":20,
-        	"max_peaks":300,
+			"max_peaks":300,
 			"min_intensity":0.01,
 			"max_charge": 10,
 			"remove_precursor_tol": 2.0
 		},
 		"Peptide": {
+			"max_peptide_len": 100,
 			"allowed_max_ptm_on_one_residue": 1,
-			"_replace_isoleucine_and_leucine_with_X":true,
-			"replace_isoleucine_and_leucine_with_X":false,
-			"replace_isoleucine_with_leucine":true,
-			"_replace_isoleucine_with_leucine":false
+			"replace_isoleucine_and_leucine_with_X":false
 		},
 		"Probe":{
 			"_ion_type":{
@@ -51,18 +49,10 @@
 			"dim_intensity": null,
 			"max_length": 100,
 			"max_charge": 10,
-			"min_peptide_len": 6,
-			"precursor_mass_tol": 50.0,
-			"isotope_error_range": [0, 1],
-			"n_beams": 1,
-			"top_match": 1,
-			"n_log": 1,
 			"tb_summarywriter": null,
-			"train_label_smoothing": 0.01,
-			"warmup_iters": 1000,
 			"out_writer": null,
 			"calculate_precision":false,
-			"cosine_schedule_period_iters": 86970
+			"freeze_encoder": false
 		},
 		"Trainer":{
 			"accelerator": "auto",
@@ -72,21 +62,43 @@
 			"gradient_clip_val": null,
 			"gradient_clip_algorithm": null,
 			"log_metrics": true,
+			"n_log": 1,
 			"tb_summarywriter": true,
 			"allow_overwrite_ckpt_check": true,
 			"save_top_k":-1,
 			"learning_rate": 5e-4,
 			"weight_decay": 1e-5,
-            "cosine_schedule_period_iters": 86970,
-            "warmup_iters": 1000,
+			"cosine_schedule_period_iters": null,
+			"train_label_smoothing": 0.01,
+			"warmup_ratio": 0.05,
+			"warmup_iters": null,
 			"num_sanity_val_steps":0,
 			"min_workers":2,
-			"max_epochs":30,
-			"batch_sz":50,
+			"max_epochs":150,
 			"log_every_n_steps":10,
+			"pretrain_batch_size":32,
 			"train_batch_size":128,
 			"valid_batch_size":128,
 			"test_batch_size":2,
+			"check_val_every_n_epoch": 1
+		},
+		"Pretrain": {
+			"temperature": 0.07,
+			"projection_dim": 256,
+			"augmentation_strength": 0.05,
+			"mask_ratio": 0.15,
+			"mz_jitter_ratio": 0.0005,
+			"use_masked_prediction": false,
+			"min_workers":2,
+			"max_epochs":150,
+			"pretrain_batch_size":32,
+			"prevalid_batch_size": 32,
+			"save_top_k":-1,
+			"learning_rate": 3e-4,
+			"weight_decay": 1e-5,
+			"warmup_ratio": 0.05,
+			"warmup_iters": null,
+			"cosine_schedule_period_iters": null,
 			"check_val_every_n_epoch": 1
 		}
 	},
@@ -110,26 +122,26 @@
 			}
 		}
 	},
-    "PTMs": {
-      "Casanovo": {
-        "Oxidation": "[Oxidation]",
-        "Carbamidomethyl": "[Carbamidomethyl]",
-        "Deamidated": "[Deamidated]"
-      },
-      "InstaNovo": {
-        "Oxidation": "[Oxidation]",
-        "Carbamidomethyl": "[Carbamidomethyl]",
-        "Deamidated": "[Deamidated]"
-      },
-      "PrimeNovo": {
-        "Oxidation": "+15.995",
-        "Carbamidomethyl": "+57.021",
-        "Deamidated": "+0.984"
-      },
-      "PointNovo": {
-        "Oxidation": "(Oxidation)",
-        "Carbamidomethyl": "(Carbamidomethyl)",
-        "Deamidated": "(Deamidated)"
-      }
-    }
+	"PTMs": {
+		"Casanovo": {
+			"Oxidation": "[Oxidation]",
+			"Carbamidomethyl": "[Carbamidomethyl]",
+			"Deamidated": "[Deamidated]"
+		},
+		"InstaNovo": {
+			"Oxidation": "[Oxidation]",
+			"Carbamidomethyl": "[Carbamidomethyl]",
+			"Deamidated": "[Deamidated]"
+		},
+		"PrimeNovo": {
+			"Oxidation": "+15.995",
+			"Carbamidomethyl": "+57.021",
+			"Deamidated": "+0.984"
+		},
+		"PointNovo": {
+			"Oxidation": "(Oxidation)",
+			"Carbamidomethyl": "(Carbamidomethyl)",
+			"Deamidated": "(Deamidated)"
+		}
+	}
 }
