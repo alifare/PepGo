@@ -1,6 +1,7 @@
 import sys
 import pandas as pd
 import csv
+from pprint import pprint
 
 
 def epoch_based_parse(file_path):
@@ -67,4 +68,26 @@ if(len(sys.argv)>1):
     print(csv_file)
 
     result_df = epoch_based_parse(csv_file)
+    #print(result_df.to_string())
+
+    # 设置 pandas 显示选项，显示全部内容
+    pd.set_option('display.max_rows', None)      # 显示所有行
+    pd.set_option('display.max_columns', None)   # 显示所有列
+    pd.set_option('display.width', None)         # 自动调整宽度
+    pd.set_option('display.max_colwidth', None)  # 显示完整列内容
+
+    # 创建列名映射
+    column_rename = {
+        'pretrain_val_mz_loss_epoch': 'mz_val_loss',
+        'pretrain_mz_loss_epoch': 'mz_loss'
+    }
+
+    # 重命名并打印
+    selected_cols = ['epoch',
+                     'pretrain_val_mz_loss_epoch',
+                     'pretrain_mz_loss_epoch']
+
     print(result_df)
+    result_df_selected = result_df[selected_cols].rename(columns=column_rename)
+    print(result_df_selected)
+

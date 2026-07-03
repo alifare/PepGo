@@ -20,6 +20,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from pathlib import Path
 
+import gzip
+import zipfile
+import tempfile
+import shutil
+
 
 # 支持的操作符
 _OP_MAP = {
@@ -699,19 +704,50 @@ class MGFConverter(object):
         return(output_mgf_file)
 
     def convert_pretrainMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
-        if(not spec_file):
-            spec_file=mgf_file+'.spec'
-        if(dryrun):
-            return(spec_file)
+        if not spec_file:
+            spec_file = mgf_file + '.spec'
+        if dryrun:
+            return spec_file
 
-        f_out=open(spec_file, 'w')
+        f_out = open(spec_file, 'w')
         f_out.write('#Scans\tPeptide\tMass\tCharge\tRTinseconds\tIons(mz:intensity)\n')
 
-        with MGF(mgf_file, convert_arrays=False, dtype=object) as reader:
-            for spectrum in reader:
-                if(preprocess):
+        # 根据文件扩展名选择打开方式
+        file_handle = None
+        temp_dir = None  # 用于存储解压zip时的临时目录
+
+        try:
+            if mgf_file.endswith('.gz'):
+                # 处理 .gz 文件：直接使用 gzip.open 返回的文件对象
+                file_handle = gzip.open(mgf_file, 'rt')  # 'rt' 表示文本模式读取
+                mgf_reader = MGF(file_handle, convert_arrays=False, dtype=object)
+            elif mgf_file.endswith('.zip'):
+                with zipfile.ZipFile(mgf_file, 'r') as zf:
+                    # 查找 .mgf 文件（大小写不敏感）
+                    mgf_names = [n for n in zf.namelist() if n.lower().endswith('.mgf')]
+                    if not mgf_names:
+                        raise ValueError(f'No .mgf file found in zip archive: {mgf_file}')
+                    mgf_name = mgf_names[0]
+                    # 使用临时目录解压
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        extracted_path = os.path.join(temp_dir, mgf_name)
+                        # 解压到临时文件
+                        with zf.open(mgf_name) as f_in:
+                            with open(extracted_path, 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
+                        # 读取 MGF 文件
+                        mgf_reader = MGF(extracted_path, convert_arrays=False, dtype=object)
+                        # 注意：如果 MGF 需要保持文件句柄，则需要在此处返回数据副本
+                        # 假设 MGF 已经将数据加载到内存，可以安全返回
+            else:
+                # 普通文件
+                mgf_reader = MGF(mgf_file, convert_arrays=False, dtype=object)
+
+            # 遍历谱图
+            for spectrum in mgf_reader:
+                if preprocess:
                     spectrum = self._meta.preprocess_spectrum(spectrum)
-                if(spectrum is None):
+                if spectrum is None:
                     continue
 
                 mz_array = spectrum['m/z array']
@@ -724,15 +760,93 @@ class MGFConverter(object):
                 pepmass = spectrum['params']['pepmass'][0]
                 precursor_mass = pepmass * charge - self._meta.proton * charge
 
-                peaks=[]
+                peaks = []
                 for mz, it in zip(mz_array, it_array):
-                    peaks.append(str(mz)+':'+str(it))
-                peaks=','.join(peaks)
+                    peaks.append(str(mz) + ':' + str(it))
+                peaks = ','.join(peaks)
                 output_line = [str(scans), '-', str(precursor_mass), str(charge), '-', peaks]
                 f_out.write('\t'.join(output_line) + '\n')
-        f_out.close()
 
-        return(spec_file)
+        finally:
+            # 清理临时文件
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            f_out.close()
+            # 如果 file_handle 存在，关闭它
+            if file_handle:
+                file_handle.close()
+
+        return spec_file
+
+    def _open_mgf_file_enhanced(self, mgf_file):
+        """
+        增强版本的_open_mgf_file，支持更多zip文件结构
+        """
+
+        if mgf_file.endswith('.gz'):
+            try:
+                # 验证gzip文件是否有效
+                with gzip.open(mgf_file, 'rb') as test:
+                    test.read(1)  # 测试读取第一个字节
+                file_handle = gzip.open(mgf_file, 'rt')
+                return file_handle, lambda: file_handle.close()
+            except (gzip.BadGzipFile, OSError) as e:
+                raise ValueError(f'Invalid gzip file: {mgf_file}') from e
+
+        elif mgf_file.endswith('.zip'):
+            try:
+                with zipfile.ZipFile(mgf_file, 'r') as zf:
+                    # 支持多层目录结构，查找所有.mgf文件
+                    mgf_names = [n for n in zf.namelist()
+                                 if n.endswith('.mgf') and not n.startswith('__MACOSX')]
+
+                    if not mgf_names:
+                        raise ValueError(f'No .mgf file found in zip archive: {mgf_file}')
+
+                    # 优先选择不在__MACOSX目录下的文件
+                    mgf_names_clean = [n for n in mgf_names if not n.startswith('__MACOSX')]
+                    if mgf_names_clean:
+                        mgf_name = mgf_names_clean[0]
+                    else:
+                        mgf_name = mgf_names[0]
+
+                    # 创建临时文件，保持原始文件名
+                    original_name = os.path.basename(mgf_name)
+                    temp_fd, temp_path = tempfile.mkstemp(
+                        suffix='_' + original_name,
+                        prefix='mgf_extract_'
+                    )
+                    os.close(temp_fd)
+
+                    # 解压文件
+                    with zf.open(mgf_name) as f_in:
+                        with open(temp_path, 'wb') as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+
+                    # 记录文件大小用于调试
+                    file_size = os.path.getsize(temp_path)
+                    if file_size == 0:
+                        raise ValueError(f'Extracted MGF file is empty: {mgf_name}')
+
+                    return temp_path, lambda: self._safe_cleanup(temp_path)
+
+            except zipfile.BadZipFile as e:
+                raise ValueError(f'Invalid zip file: {mgf_file}') from e
+
+        else:
+            # 验证普通文件是否存在
+            if not os.path.exists(mgf_file):
+                raise FileNotFoundError(f'MGF file not found: {mgf_file}')
+            return mgf_file, lambda: None
+
+    def _safe_cleanup(self, temp_path):
+        """安全的临时文件清理函数"""
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception as e:
+            import warnings
+            warnings.warn(f'Failed to clean up temporary file {temp_path}: {e}')
 
     def convert_9SpeciesMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if(not spec_file):

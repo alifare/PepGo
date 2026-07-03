@@ -53,6 +53,9 @@ def main():
                         help="Directory to save two Transformer models(./ckpt)")
     train.add_argument('-t', '--train', type=str, dest='train',default=None, help="Spec file for training")
     train.add_argument('-v', '--valid', type=str, dest='valid',default=None, help="Spec file for validation")
+    train.add_argument('-p', '--pretrained', type=str, dest='pretrained',default=None, help="The pretrained model checkpoint file (.ckpt) used for fine-tuning.")
+    train.add_argument('-n', '--model_N', type=str, dest='model_N',default=None, help="The trained N_model checkpoint file (.ckpt) used for resuming training.")
+    train.add_argument('-c', '--model_C', type=str, dest='model_C',default=None, help="The trained C_model checkpoint file (.ckpt) used for resuming training.")
 
     #Predict arguments
     predict = subparsers.add_parser('predict', help='Predicting peptides from spectra')
@@ -105,7 +108,7 @@ def main():
             mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat=='pretrainMGF' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_pretrainMGF_to_PepGo(args.input, spec_file=args.output)
-            mgf_converter.convert_spec_to_h5(spec_file)
+            #mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat == 'PepGo' and args.outformat == 'H5'):
             mgf_converter.convert_spec_to_h5(args.input)
 
@@ -135,11 +138,10 @@ def main():
 
     if(args.command == "pretrain"):
         model.initialize_models(mode='pretrain', models_dir=args.Transformers, prescan_spec=args.pretrain)
-        #sys.exit()
         model.pretrain(pretrain_spec=args.pretrain, prevalid_spec=args.prevalid)
     elif(args.command == "train"):
-        model.initialize_models(mode='train', models_dir=args.Transformers)
-        model.train(train_spec=args.train, valid_spec=args.valid)
+        model.initialize_models(mode='train', models_dir=args.Transformers, prescan_spec=args.train)
+        model.train(train_spec=args.train, valid_spec=args.valid, pretrained_ckpt=args.pretrained)
     elif(args.command == "predict"):
         start=time.time()
         model.initialize_models(mode='predict', models_dir=args.Transformers)

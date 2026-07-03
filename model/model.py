@@ -29,22 +29,12 @@ import logging
 logger = logging.getLogger("PepGo")
 
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    message=r".*Checkpoint directory .* exists and is not empty.*",
-    category=UserWarning,
-    module="lightning.pytorch.callbacks.model_checkpoint"
-)
-print("✅ 已禁用Checkpoint路径已存在警告")
-
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-#from torch.multiprocessing import Process, Manager, Pool
-#
 from .utils import UTILS
 
 class GPUWorker:
@@ -67,10 +57,6 @@ class GPUWorker:
             'processing_times': []
         }
         print(f'初始化设备: {self.device}')
-
-        # 设置内部线程池 - 用于并行处理单个批次内的样本
-        #self.inner_max_workers = inner_max_workers or min(16, torch.cuda.device_count() * 2)
-        #self.thread_pool = ThreadPoolExecutor(max_workers=self.inner_max_workers)
 
         # 模型副本
         with torch.cuda.device(self.device):
@@ -191,16 +177,7 @@ class GPUWorker:
             print(f"  最短: {min(self.stats['processing_times']):.3f}秒")
             print(f"  最长: {max(self.stats['processing_times']):.3f}秒")
 
-    def inference_async(self, batch_data):
-        """
-        异步推理版本（不等待结果）
-        """
-        return self.thread_pool.submit(self.inference, batch_data)
-
     def cleanup(self):
-        """清理资源"""
-        #self.thread_pool.shutdown(wait=True)
-
         # 清理GPU内存
         del self.model_N, self.model_C, self.monte
         if torch.cuda.is_available():
@@ -221,6 +198,9 @@ class MODEL:
         self._utils = UTILS()
         self.Trainer_configs = self._configs.get('Model', {}).get('Trainer', {})
         self.Pretrain_configs = self._configs.get('Model', {}).get('Pretrain', {})
+        self.Basic_configs = self._configs.get('Model', {}).get('Basic', {})
+
+        self.max_peaks = self.Basic_configs.get('max_peaks',300)
 
         # Initialized later:
         self.tmp_dir = None
@@ -244,32 +224,58 @@ class MODEL:
         spectra = []
         peptides = []
         total_mass = []
-        charge = []
+        charges = []
         precursors = []
 
         for i in item:
-            #spectra.append(torch.tensor(i[0]))
             s=torch.tensor(i[0])
+            if(self.max_peaks>0):
+                # 按强度降序排序
+                intensity = s[:, 1]
+                sort_idx = torch.argsort(intensity, descending=True)
+                s_sorted = s[sort_idx]
+                # 截断
+                s_truncated = s_sorted[:self.max_peaks]
+                # 重新按 m/z 升序排序
+                mz_order = torch.argsort(s_truncated[:, 0])
+                s = s_truncated[mz_order]
 
-            int_array = torch.sqrt(s[:,1])
-            int_array /= torch.linalg.norm(int_array)
-            s[:,1] = int_array
+            self.normalize_intensity=True
+            if(self.normalize_intensity):
+                intensity = s[:, 1]
+                max_intensity = intensity.max()
+                if max_intensity > 0:
+                    s[:, 1] = intensity / max_intensity
+                else:
+                    raise ValueError('max_intensity must be >0')
+
+            #int_array = torch.sqrt(s[:,1])
+            #int_array /= torch.linalg.norm(int_array)
+            #s[:,1] = int_array
+
+            prec_mass = i[2][0]
+            prec_charge = i[3][0]
+            prec_mz = (prec_mass / prec_charge) + self._proton
+            prec_intensity = 1.1  # DreaMS 论文固定值
+            prec_token = torch.tensor([[prec_mz, prec_intensity]], dtype=s.dtype)
+
+            #self._utils.parse_var(s)
+            s = torch.cat([prec_token, s], dim=0)
+            #self._utils.parse_var(s)
 
             spectra.append(s)
-
             peptides.append(i[1])
             total_mass.append(i[2])
-            charge.append(i[3])
+            charges.append(i[3])
 
-            #calc_mass = (calc_mass / charge) + self._proton
-            mz = (i[2][0] / i[3][0]) + self._proton
-
-            precursors.append([i[2][0], i[3][0], mz])
+            precursors.append([prec_mass, prec_charge, prec_mz])
 
         spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
         precursors = torch.tensor(precursors)
+        charges = torch.tensor(charges)
 
-        batch = [spectra, precursors, peptides]
+        #batch = [spectra, precursors, peptides]
+        batch = [spectra, precursors, peptides, charges]
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
@@ -299,7 +305,6 @@ class MODEL:
                 collate_fn=self.spec_collate
             )
 
-        #sys.exit()
         self.pretrainer.fit(self.Transformer_encoder, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
         if self.pretrainer.is_global_zero:
             best_src = self.pretrainer.checkpoint_callback.best_model_path
@@ -308,11 +313,37 @@ class MODEL:
                 if os.path.lexists(best_link):
                     os.remove(best_link)
                 os.symlink(os.path.basename(best_src), best_link)
-        #del train_spec_set, valid_spec_set
-        #torch.save(self.Transformer_N.encoder.state_dict(), 'pretrained_encoder.pt')
-        #sys.exit()
 
-    def train(self, train_spec=None, valid_spec=None):
+    def train(self, train_spec=None, valid_spec=None, pretrained_ckpt=None, model_N=None, model_C=None):
+        if pretrained_ckpt:
+            print(f"Loading pretrained weights from {pretrained_ckpt}")
+            # 加载检查点
+            checkpoint = torch.load(pretrained_ckpt, map_location='cpu', weights_only=False)
+            state_dict = checkpoint.get('state_dict', checkpoint)
+            keys_N = set(self.Transformer_N.state_dict().keys())
+            keys_C = set(self.Transformer_C.state_dict().keys())
+            # 检查是否完全相同
+            if keys_N == keys_C:
+                print("✅ Keys are identical! Models have the same structure.")
+            else:
+                raise ValueError('❌ Keys are different!')
+            # 获取模型当前状态字典
+            model_state_dict = self.Transformer_N.state_dict()
+
+            # 过滤形状匹配的键
+            filtered_state_dict = {}
+            for key, value in state_dict.items():
+                if key in model_state_dict and value.shape == model_state_dict[key].shape:
+                    filtered_state_dict[key] = value
+                else:
+                    print(f"Skipping {key}: shape mismatch or not found")
+
+            # 加载到两个模型
+            self.Transformer_N.load_state_dict(filtered_state_dict, strict=False)
+            self.Transformer_C.load_state_dict(filtered_state_dict, strict=False)
+
+            print(f"✅ Loaded {len(filtered_state_dict)}/{len(model_state_dict)} parameters to both Transformer_N and Transformer_C")
+
         #Training self.Transformer_N
         train_spec_set = HDF(train_spec)
         train_spec_set_loader = torch.utils.data.DataLoader(
@@ -331,9 +362,15 @@ class MODEL:
                 num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
-        #print('Training Transformer_N ...')
         self.trainer_N.fit(self.Transformer_N, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
-        #del train_spec_set, valid_spec_set
+        if self.trainer_N.is_global_zero:
+            best_src = self.trainer_N.checkpoint_callback.best_model_path
+            if best_src:
+                best_link = os.path.join(os.path.dirname(best_src), "best.ckpt")
+                if os.path.lexists(best_link):
+                    os.remove(best_link)
+                os.symlink(os.path.basename(best_src), best_link)
+
 
         #Training self.Transformer_C
         train_spec_set = HDF(train_spec, reverse = True)
@@ -353,9 +390,15 @@ class MODEL:
                 num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
-        #print('Training Transformer_C ...')
         self.trainer_C.fit(self.Transformer_C, train_dataloaders=train_spec_set_loader, val_dataloaders=valid_spec_set_loader)
-        #del train_spec_set, valid_spec_set
+        if self.trainer_C.is_global_zero:
+            best_src = self.trainer_C.checkpoint_callback.best_model_path
+            if best_src:
+                best_link = os.path.join(os.path.dirname(best_src), "best.ckpt")
+                if os.path.lexists(best_link):
+                    os.remove(best_link)
+                os.symlink(os.path.basename(best_src), best_link)
+
 
     def predict(self, spec_file, output_spec_file=None):
         mp.set_start_method('fork', force=True)
@@ -391,18 +434,14 @@ class MODEL:
             persistent_workers=False
         )
 
-        print(f"CPU核心数: {os.cpu_count()}")
-        print(f"使用 {self.num_GPUs} 个GPU进行推理")
+        #print(f"CPU核心数: {os.cpu_count()}")
+        #print(f"使用 {self.num_GPUs} 个GPU进行推理")
         print(f"DataLoader共有 {len(spec_set_loader)} 个批次")
 
         # 创建GPU workers
-        gpu_workers = []
-        for i in range(self.num_GPUs):
-            worker = GPUWorker(self._meta, self._configs, i, self.Transformer_N, self.Transformer_C, mode=0, delta=-2)
-            gpu_workers.append(worker)
-
+        worker = GPUWorker(self._meta, self._configs, 0, self.Transformer_N, self.Transformer_C, mode=0, delta=-2)
         for batch_idx, batch_data in enumerate(spec_set_loader):
-            batch_results = gpu_workers[0].inference(batch_data)
+            batch_results = worker.inference(batch_data)
             for result in batch_results:
                 if (result is not None):
                     line = '\t'.join([str(i) for i in result])
@@ -411,13 +450,10 @@ class MODEL:
                 f_out.write(line + '\n')
         f_out.close()
 
-        # 清理GPU内存
-        print("\n清理资源...")
-        for worker in gpu_workers:
-            try:
-                worker.cleanup()
-            except Exception as e:
-                print(f"清理GPU{worker.gpu_idx}时出错: {e}")
+        try:
+            worker.cleanup()
+        except Exception as e:
+            print(f"清理GPU{worker.gpu_idx}时出错: {e}")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         print("推理完成！")
@@ -429,9 +465,9 @@ class MODEL:
         if(mode=='pretrain'):
             hist_cb = ModelCheckpoint(
                 dirpath=checkpoints_dir,
-                filename='pretrained-encoder-{epoch:02d}-{pretrain_contrastive_loss:.4f}',
-                every_n_epochs=1,
-                monitor="pretrain_val_contrastive_loss",
+                filename='pretrained-encoder-{epoch:02d}-{pretrain_val_total_loss:.4f}',
+                every_n_epochs=self.Pretrain_configs.get('every_n_epochs', 1),
+                monitor="pretrain_val_mz_loss",
                 mode="min",
                 save_top_k=self.Pretrain_configs.get('save_top_k', 1),
                 enable_version_counter=False,  # Added by ChangYuqi
@@ -440,7 +476,7 @@ class MODEL:
             hist_cb = ModelCheckpoint(
                 dirpath=checkpoints_dir,
                 filename=self.current_datetime + "-{epoch:02d}-{step}-{valid_CELoss:.3f}",
-                every_n_epochs=1,
+                every_n_epochs=self.Trainer_configs.get('every_n_epochs', 1),
                 monitor="valid_CELoss",
                 mode="min",
                 save_top_k=self.Trainer_configs.get('save_top_k', 1),
@@ -579,15 +615,18 @@ class MODEL:
                 if(user_cosine is None):
                     self.Trainer_configs['cosine_schedule_period_iters'] = correct_cosine_period
 
-        if(mode=='pretrain'):
-            model_dir_encoder = os.path.join(models_dir, 'ckpt_pretrain')
-            self._utils.make_dir(model_dir_encoder)
+        if (prescan_spec is not None):
+            prescan_batch_size=self.Trainer_configs.get('train_batch_size')
+            prescan_min_workers=self.Trainer_configs.get('min_workers')
+            if(mode=='pretrain'):
+                prescan_batch_size=self.Pretrain_configs.get('pretrain_batch_size')
+                prescan_min_workers=self.Pretrain_configs.get('min_workers')
 
             prescan_spec_set = HDF(prescan_spec)
             prescan_spec_set_loader = torch.utils.data.DataLoader(
                 prescan_spec_set,
-                batch_size=self.Pretrain_configs.get('pretrain_batch_size'),
-                num_workers=self.Pretrain_configs.get('min_workers'),
+                batch_size=prescan_batch_size,
+                num_workers=prescan_min_workers,
                 collate_fn=self.spec_collate,
                 shuffle=True,
             )
@@ -595,9 +634,11 @@ class MODEL:
             prescan(prescan_spec_set_loader)
             del prescan_spec_set, prescan_spec_set_loader
 
+        if(mode=='pretrain'):
+            model_dir_encoder = os.path.join(models_dir, 'ckpt_pretrain')
+            self._utils.make_dir(model_dir_encoder)
             self.pretrainer = self.initialize_trainer(mode=mode, model_dir=model_dir_encoder)
             self.Transformer_encoder = self.initialize_one_model(mode=mode, model_dir=model_dir_encoder)
-
         elif(mode=='train' or mode=='predict'):
             model_dir_N = os.path.join(models_dir, 'ckpt_N')
             model_dir_C = os.path.join(models_dir, 'ckpt_C')
