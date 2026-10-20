@@ -219,6 +219,41 @@ class MODEL:
 
         self.isotope_error_range = self._configs['MCTTS']['Tree']['isotope_error_range']
 
+    def spec_collate_oldCasanovo(self, item):
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
+        spectra = []
+        peptides = []
+        total_mass = []
+        charge = []
+        precursors = []
+
+        for i in item:
+            #spectra.append(torch.tensor(i[0]))
+            s=torch.tensor(i[0])
+
+            int_array = torch.sqrt(s[:,1])
+            int_array /= torch.linalg.norm(int_array)
+            s[:,1] = int_array
+
+            spectra.append(s)
+
+            peptides.append(i[1])
+            total_mass.append(i[2])
+            charge.append(i[3])
+
+            #calc_mass = (calc_mass / charge) + self._proton
+            mz = (i[2][0] / i[3][0]) + self._proton
+
+            precursors.append([i[2][0], i[3][0], mz])
+
+        spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
+        precursors = torch.tensor(precursors)
+
+        batch = [spectra, precursors, peptides]
+
+        #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
+        return(batch)
+
     def spec_collate(self, item):
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' started '+ '+'*100)
         spectra = []
@@ -226,6 +261,9 @@ class MODEL:
         total_mass = []
         charges = []
         precursors = []
+        precursors_mass = []
+        precursors_charge = []
+        precursors_mz = []
 
         for i in item:
             s=torch.tensor(i[0])
@@ -240,6 +278,7 @@ class MODEL:
                 mz_order = torch.argsort(s_truncated[:, 0])
                 s = s_truncated[mz_order]
 
+            '''
             self.normalize_intensity=True
             if(self.normalize_intensity):
                 intensity = s[:, 1]
@@ -248,19 +287,18 @@ class MODEL:
                     s[:, 1] = intensity / max_intensity
                 else:
                     raise ValueError('max_intensity must be >0')
-
-            #int_array = torch.sqrt(s[:,1])
-            #int_array /= torch.linalg.norm(int_array)
-            #s[:,1] = int_array
+            '''
+            intensity = torch.sqrt(s[:,1])
+            s[:,1] = intensity / torch.linalg.norm(intensity)
 
             prec_mass = i[2][0]
             prec_charge = i[3][0]
             prec_mz = (prec_mass / prec_charge) + self._proton
-            prec_intensity = 1.1  # DreaMS 论文固定值
-            prec_token = torch.tensor([[prec_mz, prec_intensity]], dtype=s.dtype)
+            #prec_intensity = 1.1  # DreaMS 论文固定值
+            #prec_token = torch.tensor([[prec_mz, prec_intensity]], dtype=s.dtype)
 
             #self._utils.parse_var(s)
-            s = torch.cat([prec_token, s], dim=0)
+            #s = torch.cat([prec_token, s], dim=0)
             #self._utils.parse_var(s)
 
             spectra.append(s)
@@ -270,12 +308,20 @@ class MODEL:
 
             precursors.append([prec_mass, prec_charge, prec_mz])
 
+            precursors_mass.append([prec_mass])
+            precursors_mz.append([prec_mz])
+            precursors_charge.append([prec_charge])
+
         spectra = torch.nn.utils.rnn.pad_sequence(spectra, batch_first=True)
         precursors = torch.tensor(precursors)
         charges = torch.tensor(charges)
+        precursors_mass = torch.tensor(precursors_mass)
+        precursors_charge = torch.tensor(precursors_charge)
+        precursors_mz = torch.tensor(precursors_mz)
+
 
         #batch = [spectra, precursors, peptides]
-        batch = [spectra, precursors, peptides, charges]
+        batch = [spectra, precursors, peptides, charges, precursors_mass, precursors_charge, precursors_mz]
 
         #print(self.__class__.__name__+ ' ' + sys._getframe().f_code.co_name + ' ended '+ '+'*100)
         return(batch)
@@ -470,6 +516,7 @@ class MODEL:
                 monitor="pretrain_val_mz_loss",
                 mode="min",
                 save_top_k=self.Pretrain_configs.get('save_top_k', 1),
+                save_last=True,
                 enable_version_counter=False,  # Added by ChangYuqi
             )
         elif(mode=='train'):
@@ -480,7 +527,7 @@ class MODEL:
                 monitor="valid_CELoss",
                 mode="min",
                 save_top_k=self.Trainer_configs.get('save_top_k', 1),
-                save_last='link',  # Added by ChangYuqi
+                save_last=True,  # Added by ChangYuqi
                 enable_version_counter=False,  # Added by ChangYuqi
             )
 
@@ -533,6 +580,7 @@ class MODEL:
             enable_checkpointing=False,
             precision=self.Trainer_configs.get('precision'),
             logger=False,  # 临时值，后面会被覆盖
+            enable_progress_bar=self.Trainer_configs.get('enable_progress_bar'),
         )
         additional_cfg = dict()
 
@@ -576,7 +624,7 @@ class MODEL:
         trainer = pl.Trainer(**trainer_cfg)
         return trainer
 
-    def initialize_models(self, mode=None, models_dir=None, prescan_spec=None) -> None:
+    def initialize_models(self, mode=None, encoder=None, models_dir=None, prescan_spec=None) -> None:
 
         def prescan(data_loader):
             if data_loader is None:
@@ -638,7 +686,7 @@ class MODEL:
             model_dir_encoder = os.path.join(models_dir, 'ckpt_pretrain')
             self._utils.make_dir(model_dir_encoder)
             self.pretrainer = self.initialize_trainer(mode=mode, model_dir=model_dir_encoder)
-            self.Transformer_encoder = self.initialize_one_model(mode=mode, model_dir=model_dir_encoder)
+            self.Transformer_encoder = self.initialize_one_model(mode=mode, encoder=encoder, model_dir=model_dir_encoder)
         elif(mode=='train' or mode=='predict'):
             model_dir_N = os.path.join(models_dir, 'ckpt_N')
             model_dir_C = os.path.join(models_dir, 'ckpt_C')
@@ -648,19 +696,19 @@ class MODEL:
             self.trainer_N = self.initialize_trainer(mode=mode, model_dir=model_dir_N)
             self.trainer_C = self.initialize_trainer(mode=mode, model_dir=model_dir_C)
 
-            self.Transformer_N = self.initialize_one_model(mode=mode, model_dir=model_dir_N)
-            self.Transformer_C = self.initialize_one_model(mode=mode, model_dir=model_dir_C)
+            self.Transformer_N = self.initialize_one_model(mode=mode, encoder=encoder, model_dir=model_dir_N)
+            self.Transformer_C = self.initialize_one_model(mode=mode, encoder=encoder, model_dir=model_dir_C)
 
 
-    def initialize_one_model(self, mode=None, model_dir=None) -> None:
+    def initialize_one_model(self, mode=None, encoder=None, model_dir=None) -> None:
         model_params = dict(configs=self._configs, meta=self._meta)
         loaded_model_params = dict(configs=self._configs, meta=self._meta)
 
         loaded_model=None
         if mode== 'pretrain':
-            loaded_model = Transformer(pretrain_mode=True, **model_params)
+            loaded_model = Transformer(pretrain_mode=True, encoder=encoder, **model_params)
         if mode== 'train':
-            loaded_model = Transformer(**model_params)
+            loaded_model = Transformer(encoder=encoder, **model_params)
         elif mode== 'predict':
             #ckpt_file = os.path.join(model_dir, 'checkpoints', 'best.ckpt')
             ckpt_files = glob.glob(os.path.join(model_dir, 'checkpoints', 'best*.ckpt'))

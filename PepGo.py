@@ -45,6 +45,7 @@ def main():
                         help="Directory to save a Transformer encoder model(./ckpt)")
     pretrain.add_argument('-t', '--pretrain', type=str, dest='pretrain',default=None, help="Spec file for pre-training")
     pretrain.add_argument('-v', '--prevalid', type=str, dest='prevalid',default=None, help="Spec file for pre-validation")
+    pretrain.add_argument('-e', '--encoder', type=str, dest='encoder',default=None, help="The encoder for spectra")
 
     #Train arguments
     train = subparsers.add_parser('train', help='Training Transformer models')
@@ -56,6 +57,7 @@ def main():
     train.add_argument('-p', '--pretrained', type=str, dest='pretrained',default=None, help="The pretrained model checkpoint file (.ckpt) used for fine-tuning.")
     train.add_argument('-n', '--model_N', type=str, dest='model_N',default=None, help="The trained N_model checkpoint file (.ckpt) used for resuming training.")
     train.add_argument('-c', '--model_C', type=str, dest='model_C',default=None, help="The trained C_model checkpoint file (.ckpt) used for resuming training.")
+    train.add_argument('-e', '--encoder', type=str, dest='encoder', default=None, help="The encoder for spectra")
 
     #Predict arguments
     predict = subparsers.add_parser('predict', help='Predicting peptides from spectra')
@@ -63,6 +65,7 @@ def main():
                         help="Directory containing the two Transformer models(.ckpt)")
     predict.add_argument('input', type=str, default=None, help="Name of the spec file for prediction")
     predict.add_argument('-o', '--output', type=str, dest='output', default=None, help="Name of the output spec file")
+    predict.add_argument('-e', '--encoder', type=str, dest='encoder', default=None, help="The encoder for spectra")
 
     args = parser.parse_args()
     #print('args:')
@@ -106,8 +109,8 @@ def main():
         elif(args.informat=='9species' and args.outformat=='PepGo'):
             spec_file = mgf_converter.convert_9SpeciesMGF_to_PepGo(args.input, preprocess=True, spec_file=args.output)
             mgf_converter.convert_spec_to_h5(spec_file)
-        elif(args.informat=='pretrainMGF' and args.outformat=='PepGo'):
-            spec_file = mgf_converter.convert_pretrainMGF_to_PepGo(args.input, spec_file=args.output)
+        elif(args.informat=='PRIDE' and args.outformat=='PepGo'):
+            spec_file = mgf_converter.convert_PRIDE_to_PepGo(args.input, spec_file=args.output)
             #mgf_converter.convert_spec_to_h5(spec_file)
         elif(args.informat == 'PepGo' and args.outformat == 'H5'):
             mgf_converter.convert_spec_to_h5(args.input)
@@ -137,14 +140,16 @@ def main():
         '''
 
     if(args.command == "pretrain"):
-        model.initialize_models(mode='pretrain', models_dir=args.Transformers, prescan_spec=args.pretrain)
+        model.initialize_models(mode='pretrain', encoder=args.encoder, models_dir=args.Transformers, prescan_spec=args.pretrain)
         model.pretrain(pretrain_spec=args.pretrain, prevalid_spec=args.prevalid)
     elif(args.command == "train"):
-        model.initialize_models(mode='train', models_dir=args.Transformers, prescan_spec=args.train)
+        #print(args.encoder)
+        #sys.exit()
+        model.initialize_models(mode='train', encoder=args.encoder, models_dir=args.Transformers, prescan_spec=args.train)
         model.train(train_spec=args.train, valid_spec=args.valid, pretrained_ckpt=args.pretrained)
     elif(args.command == "predict"):
         start=time.time()
-        model.initialize_models(mode='predict', models_dir=args.Transformers)
+        model.initialize_models(mode='predict', encoder=args.encoder, models_dir=args.Transformers)
         model.predict(args.input, args.output)
         end=time.time()
         print('Total_time_consumed in prediction:',end=':')

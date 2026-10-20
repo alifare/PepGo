@@ -1,5 +1,6 @@
 import sys
 import pandas as pd
+import numpy as np
 import csv
 from pprint import pprint
 
@@ -52,7 +53,11 @@ def epoch_based_parse(file_path):
 
     # 数据类型转换
     for col in result_df.columns:
-        result_df[col] = pd.to_numeric(result_df[col])
+        #result_df[col] = pd.to_numeric(result_df[col])
+        result_df[col] = pd.to_numeric(
+            result_df[col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan, "None": np.nan}),
+            errors="coerce",
+        )
 
     print(f"\n最终解析结果:")
     print(f"总epoch数: {len(result_df)}")
@@ -63,9 +68,10 @@ def epoch_based_parse(file_path):
 
 if(len(sys.argv)>1):
     csv_file = sys.argv[1]
-    print('\n'+'-'*100)
+    print('\n')
     print('csv_file',end=':')
     print(csv_file)
+    print('-'*100)
 
     result_df = epoch_based_parse(csv_file)
     #print(result_df.to_string())
@@ -78,16 +84,22 @@ if(len(sys.argv)>1):
 
     # 创建列名映射
     column_rename = {
-        'pretrain_val_mz_loss_epoch': 'mz_val_loss',
-        'pretrain_mz_loss_epoch': 'mz_loss'
+        'pretrain_val_mz_loss_epoch': 'pre_mz_val_loss',
+        'pretrain_mz_loss_epoch': 'pre_mz_loss'
     }
 
     # 重命名并打印
     selected_cols = ['epoch',
+                     'step',
+                     'valid_CELoss',
+                     'valid_accuracy',
+                     'train_CELoss',
+                     'train_accuracy',
                      'pretrain_val_mz_loss_epoch',
                      'pretrain_mz_loss_epoch']
 
     print(result_df)
-    result_df_selected = result_df[selected_cols].rename(columns=column_rename)
+    print('-'*100)
+    result_df_selected = result_df.filter(items=selected_cols).rename(columns=column_rename)
     print(result_df_selected)
 

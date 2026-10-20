@@ -13,12 +13,14 @@ import lightning.pytorch as pl
 from .utils import UTILS
 from pprint import pprint
 
-from .NeuralNetworks import PeakEncoder, SpectrumEncoder, PeptideDecoder, PeptideTokenizer
-from .NeuralNetworks import DreaMSSpectrumEncoder
+import inspect
+
+
+
 import dreams.utils.spectra as su
 
 class Transformer(pl.LightningModule):
-    def __init__(self, configs=None, meta=None, pretrain_mode: bool = False,  **kwargs: Dict):
+    def __init__(self, configs=None, meta=None, pretrain_mode: bool = False, encoder=None, **kwargs: Dict):
         super().__init__()
         self.save_hyperparameters()
 
@@ -28,6 +30,11 @@ class Transformer(pl.LightningModule):
         self._mass_dict = self._meta.mass_dict
         self.residues = self._meta.tokens
         self._pretrain_mode = pretrain_mode
+        self._encoder_type = encoder
+        assert self._encoder_type in ('DreaMS', 'Casanovo', 'my'), \
+            f"encoder_type must be 'DreaMS' or 'Casanovo', got {self._encoder_type}"
+        print(f"The encoder type is: {self._encoder_type}")
+        #sys.exit()
 
         self._utils = UTILS()
         #self._utils.parse_var(self._pretrain_mode, 'self._pretrain_mode')
@@ -37,6 +44,7 @@ class Transformer(pl.LightningModule):
 
         self.Transformer_configs = Model_configs.get('Transformer',{})
         self.DreaMS_configs = Model_configs.get('DreaMS', {})
+        self.my_configs = Model_configs.get('my', {})
 
         self.Pretrain_configs = self._configs.get('Model', {}).get('Pretrain', {})
         self.Trainer_configs = self._configs.get('Model', {}).get('Trainer', {})
@@ -68,6 +76,24 @@ class Transformer(pl.LightningModule):
         self.warmup_iters = None
         self.cosine_schedule_period_iters = None
 
+        # Build the model.
+        self.encoder = None
+        if (self._encoder_type == 'Casanovo'):
+            from .Casanovo import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
+            self.encoder = SpectrumEncoder(
+                d_model=dim_model,
+                n_head=n_head,
+                dim_feedforward=dim_feedforward,
+                n_layers=n_layers,
+                dropout=dropout,
+            )
+        elif (self._encoder_type == 'DreaMS'):
+            from .DreaMS import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
+            self.encoder = SpectrumEncoder(self.DreaMS_configs)
+        elif (self._encoder_type == 'my'):
+            from .my import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
+            self.encoder = SpectrumEncoder(configs=self.my_configs)
+
         self.tokenizer = PeptideTokenizer(
             residues=self._meta.tokens,
             replace_isoleucine_and_leucine_with_X=self.replace_isoleucine_and_leucine_with_X,
@@ -77,18 +103,10 @@ class Transformer(pl.LightningModule):
 
         self.vocab_size = len(self.tokenizer) + 1
 
-        # Build the model.
-        '''
-        self.encoder = SpectrumEncoder(
-            d_model=dim_model,
-            n_head=n_head,
-            dim_feedforward=dim_feedforward,
-            n_layers=n_layers,
-            dropout=dropout,
-        )
-        '''
 
-        self.encoder = DreaMSSpectrumEncoder(self.DreaMS_configs)
+        #print(dir(self.encoder))
+        #print("Attributes:", vars(self.encoder))
+        #print("Methods and props:", [m for m in dir(self.encoder) if not m.startswith('_')])
 
         self.decoder = PeptideDecoder(
             n_tokens=len(self.tokenizer),
@@ -170,28 +188,31 @@ class Transformer(pl.LightningModule):
         return [optimizer], {"scheduler": lr_scheduler, "interval": "step"}
 
     # ==================== 数据处理方法 ====================
-    def _process_batch(self, batch, type='labeled'):
-        spectra, precursors, peptides, charges = batch
+    def _process_batch(self, batch, datatype='labeled'):
+        spectra, precursors, peptides, charges, precursors_mass, precursors_charge, precursors_mz = batch
         device = next(self.parameters()).device
         spectra = spectra.to(device)
         charges = charges.to(device)
+        precursors_mass = precursors_mass.to(device)
+        precursors_charge = precursors_charge.to(device)
+        precursors_mz = precursors_mz.to(device)
 
-        #spectra.to(self.device)
-        #charges.to(self.device)
+        '''
+        print(charges == precursors_charge)
+        self._utils.parse_var(charges)
+        self._utils.parse_var(precursors_charge)
+        sys.exit()
+        '''
 
-        if(type=='labeled'):
-            #precursors = precursors.to(self.device)
+        if(datatype=='labeled'):
             precursors = precursors.to(device)
             tokens = self.tokenizer.tokenize(peptides, add_stop=True)
-            #tokens = tokens.to(self.device)
             tokens = tokens.to(device)
-            #return(mzs, intensities, precursors, tokens)
-            return(spectra, precursors, tokens, charges)
-        elif(type=='unlabeled'):
-            #return(mzs, intensities)
-            return(spectra, charges)
+            return(spectra, precursors, tokens, charges, precursors_mass, precursors_charge, precursors_mz)
+        elif(datatype=='unlabeled'):
+            return(spectra, precursors_mass, precursors_charge, precursors_mz)
         else:
-            raise ValueError('The mode must be labeled or unlabeled')
+            raise ValueError('The datatype must be labeled or unlabeled')
 
     # ==================== 前向传播 ====================
     def forward(self, batch):
@@ -201,18 +222,14 @@ class Transformer(pl.LightningModule):
         def supervised_forward():
             """监督学习前向传播"""
             _, _, peptides, _ = batch
-            #mzs, ints, precursors, _ = self._process_batch(batch)
-            #memories, mem_masks = self.encoder(mzs, ints)
-            spectra, precursors, tokens, charges = self._process_batch(batch)
-
-            #memories, mem_masks = self.encoder(mzs, ints)
-            memories, mem_masks, _ = self.encoder(spectra, charges)
+            spectra, precursors, tokens, charges, precursors_mass, precursors_charge, precursors_mz = self._process_batch(batch, datatype='labeled')
+            memories, mem_masks, _ = self.encoder(spectra, precursors_mass, precursors_charge, precursors_mz)
             return memories, mem_masks, precursors, peptides
 
         def pretrain_forward():
             """预训练前向传播"""
-            spectra, charges = self._process_batch(batch, type='unlabeled')
-            spectrum_embedding, peak_embeddings = self.encoder(spectra, charges)
+            spectra, charges = self._process_batch(batch, datatype='unlabeled')
+            spectrum_embedding, peak_embeddings, _ = self.encoder(spectra, charges)
             return spectrum_embedding, peak_embeddings
 
         """根据模式选择前向传播"""
@@ -222,82 +239,6 @@ class Transformer(pl.LightningModule):
             return supervised_forward()
 
     # ==================== 预训练步骤 ====================
-
-
-    def generate_mask_old(self, spectra, mask_ratio=0.3, min_n_masks=2, mode='random'):
-        """
-        生成掩码（与 DreaMS 官方保持一致）
-
-        Parameters
-        ----------
-        spectra : torch.Tensor
-            谱图张量 (batch, n_peaks, 2)，最后一维为 [m/z, intensity]
-        mask_ratio : float
-            掩码比例，默认 0.3
-        min_n_masks : int
-            最小掩码数量，默认 2
-        mode : str
-            掩码模式：
-            - 'random': 按强度概率随机采样（训练用）
-            - 'fixed': 固定掩码强度最高的峰（验证用）
-
-        Returns
-        -------
-        spectra_masked : torch.Tensor
-            掩码后的谱图 (batch, n_peaks, 2)
-        mask : torch.Tensor
-            布尔掩码 (batch, n_peaks)，True 表示被掩码的位置
-        """
-        batch_size, n_peaks, _ = spectra.shape
-        device = spectra.device
-
-        # 提取 m/z 和 intensity
-        mzs = spectra[..., 0]
-        intensities = spectra[..., 1]
-
-        #排除 padding 位置（m/z = 0 或 intensity = 0 或 intensity > 1）
-        valid_mask = (mzs != 0) & (intensities != 0) & (intensities <= 1.0)
-
-        #初始化掩码
-        mask = torch.zeros_like(mzs, dtype=torch.bool)
-
-        for b in range(batch_size):
-            valid_idx = valid_mask[b].nonzero(as_tuple=True)[0]
-            if len(valid_idx) == 0:
-                continue
-
-            # 计算掩码数量
-            n_peaks_valid = len(valid_idx)
-            n_masks = max(min_n_masks, round(n_peaks_valid * mask_ratio))
-            n_masks = min(n_masks, n_peaks_valid)
-
-            if mode == 'random':
-                # 按强度加权采样（强度归一化到 [0,1] 后，概率分布更合理）
-                probs = intensities[b][valid_idx]
-                probs = probs / (probs.sum() + 1e-8)
-                if n_masks == n_peaks_valid:
-                    masked_idx = torch.randperm(n_peaks_valid)
-                else:
-                    masked_idx = torch.multinomial(probs, n_masks, replacement=False)
-            elif mode == 'fixed':
-                # 固定掩码强度最高的峰（验证用）
-                valid_intensities = intensities[b][valid_idx]
-                _, masked_idx = torch.topk(valid_intensities, n_masks)
-            elif mode == 'uniform':
-                # 均匀随机采样（不按强度）
-                shuffled_idx = torch.randperm(len(valid_idx))
-                masked_idx = shuffled_idx[:n_masks]
-            else:
-                raise ValueError(f"Unknown mask mode: {mode}. Choose from 'random', 'fixed', 'uniform'")
-            mask[b, valid_idx[masked_idx]] = True
-
-        #生成掩码后的谱图
-        spectra_masked = spectra.clone()
-        spectra_masked[:, :, 0] = torch.where(mask, torch.tensor(-1.0, device=spectra.device), spectra_masked[:, :, 0])
-        spectra_masked[:, :, 1] = torch.where(mask, torch.tensor(0.0, device=spectra.device), spectra_masked[:, :, 1])
-
-        return spectra_masked, mask
-
     def generate_mask(self, spectra, mask_ratio=0.3, min_n_masks=2, mode='random', deterministic_seed=None):
         """
         生成掩码（与 DreaMS 官方保持一致）
@@ -378,90 +319,41 @@ class Transformer(pl.LightningModule):
         return spectra_masked, mask
 
     def _pretraining_step(self, batch, mode: str = "pretrain") -> torch.Tensor:
-        spectra, charges = self._process_batch(batch, type='unlabeled')
+        spectra, precursors_mass, precursors_charge, precursors_mz = self._process_batch(batch, datatype='unlabeled')
+        current_batch_size = spectra.shape[0]
         mask_mode = 'random' if mode == 'pretrain' else 'fixed'
 
         masked_spectra, mask = self.generate_mask(spectra, mode=mask_mode)
-        x, _, _ = self.encoder(masked_spectra, charges)
 
-        masked_embs = x[mask]
+        if (self._encoder_type == 'Casanovo'):
+            memories, _, _ = self.encoder(masked_spectra, precursors_charge)
+        elif (self._encoder_type == 'DreaMS'):
+            pass
+        elif (self._encoder_type == 'my'):
+            memories, mem_masks, _ = self.encoder(masked_spectra, precursors_mass, precursors_charge, precursors_mz)
+
+        masked_embs = memories[mask]
         real = spectra[mask]
 
-        # ===== m/z 预测 =====
-        pred_mz = self.encoder.ff_out(masked_embs)  # (N, num_bins)
-        real_mz = su.to_hot(
-            real[..., [0]],
-            max_val=self.encoder.max_mz,
-            bin_size=self.encoder.hot_mz_bin_size
-        )
+        pred_mz = self.encoder.peak_decoder(masked_embs)
+        real_mz = self.encoder.peak_decoder.to_hot(real[..., [0]])
+
         # 使用交叉熵（或自定义的 mz_masking_loss，但应保持一致）
-        #mz_loss = F.cross_entropy(pred_mz, real_mz, reduction='none')  # 或 self.encoder.mz_masking_loss(...)
-        mz_loss, _ = self.encoder.mz_masking_loss(pred_mz, real_mz)
+        mz_loss = F.cross_entropy(pred_mz, real_mz, reduction='none')  # 或 self.encoder.mz_masking_loss(...)
+        #mz_loss, _ = self.encoder.mz_masking_loss(pred_mz, real_mz)
 
         loss = mz_loss.mean()  # 无强度损失
 
         self.log(
             f"{mode}_mz_loss",
-                 loss.detach(),
-                 on_step=True,
-                 on_epoch=True,
-                 sync_dist=True,
-                 prog_bar=True
+                loss.detach(),
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=current_batch_size,
+                prog_bar=True
         )
         return loss
-
-    def _pretraining_step_old(self, batch, mode: str = "pretrain") -> torch.Tensor:
-        spectra, charges = self._process_batch(batch, type='unlabeled')
-        mask_mode = 'random' if(mode == 'pretrain') else 'fixed'
-
-        masked_spectra, mask = self.generate_mask(spectra, mode=mask_mode)
-
-        #x, padding_mask, graphormer_dists = self.encoder(masked_spectra, charges)
-        x, _, _ = self.encoder(masked_spectra, charges)
-
-        # 提取被掩码位置的嵌入和真实值
-        masked_embs = x[mask]
-        real = spectra[mask]
-
-        # ========== m/z 预测 ==========
-        pred_mz = self.encoder.ff_out(masked_embs)
-        real_mz = su.to_hot(
-            real[..., [0]],
-            max_val=self.encoder.max_mz,
-            bin_size=self.encoder.hot_mz_bin_size
-        )
-
-        # Focal Loss
-        mz_loss, p_mz = self.encoder.mz_masking_loss(pred_mz, real_mz)
-        # p_mz 是 softmax 后的概率，可用于标签平滑（如果需要）
-
-        # ========== 强度预测 ==========
-        pred_intens = self.encoder.ff_out_intens(masked_embs)
-        real_intens = su.to_hot(
-            real[..., [1]],
-            max_val=1.0,
-            bin_size=0.05
-        )
-
-        intens_loss = F.cross_entropy(pred_intens, real_intens, reduction='none')
-
-        # ========== 总损失 ==========
-        # m/z 损失权重 1.0，强度损失权重 0.5（论文设定）
-        loss = mz_loss + 0.5 * intens_loss
-
-        # 日志记录
-        self.log(
-            f"{mode}_reconstruction_loss",
-            loss.mean().detach(),
-            on_step=True,
-            on_epoch=True,
-            sync_dist=True,
-            prog_bar=True
-        )
-        self.log(f"{mode}_mz_loss", mz_loss.mean().detach(), on_step=True, on_epoch=True)
-        self.log(f"{mode}_intens_loss", intens_loss.mean().detach(), on_step=True, on_epoch=True)
-
-        return loss.mean()
 
     def _supervised_step(self, batch, mode: str = "train") -> torch.Tensor:
         """
@@ -479,9 +371,15 @@ class Transformer(pl.LightningModule):
         torch.Tensor
             Loss value
         """
-        #mzs, ints, precursors, tokens = self._process_batch(batch)
-        spectra, precursors, tokens, charges = self._process_batch(batch)
-        memories, mem_masks, _ = self.encoder(spectra, charges)
+        spectra, precursors, tokens, charges, precursors_mass, precursors_charge, precursors_mz = self._process_batch(batch, datatype='labeled')
+        current_batch_size = spectra.shape[0]
+
+        if (self._encoder_type == 'Casanovo'):
+            memories, mem_masks, _ = self.encoder(spectra, precursors_charge)
+        elif (self._encoder_type == 'DreaMS'):
+            pass
+        elif (self._encoder_type == 'my'):
+            memories, mem_masks, _ = self.encoder(spectra, precursors_mass, precursors_charge, precursors_mz)
 
         scores = self.decoder(
             tokens=tokens,
@@ -511,7 +409,7 @@ class Transformer(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
-            batch_size=pred.shape[0],
+            batch_size=current_batch_size,
             prog_bar=True
         )
         self.log(
@@ -520,6 +418,7 @@ class Transformer(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
+            batch_size=current_batch_size,
             prog_bar=True
         )
         return loss

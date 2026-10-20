@@ -703,7 +703,7 @@ class MGFConverter(object):
         self.batch_write_to_MGF(input_mgf=input_mgf_file, output_mgf=output_mgf_file, remove_charge_sign=remove_charge_sign)
         return(output_mgf_file)
 
-    def convert_pretrainMGF_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
+    def convert_PRIDE_to_PepGo(self, mgf_file, spec_file=None, dryrun=False, preprocess=False):
         if not spec_file:
             spec_file = mgf_file + '.spec'
         if dryrun:
@@ -755,6 +755,13 @@ class MGFConverter(object):
                 assert len(mz_array) == len(it_array), 'Length of mz array and intensity array mismatch!'
 
                 scans = spectrum['params'].get('scans', None)
+                #sample_id = re.sub(r'\.mgf(\..*)?$', '', os.path.basename(mgf_file), flags=re.I)
+                sample_id = os.path.basename(mgf_file)
+
+                scans = sample_id +'_scans=' +str(scans)
+                rtinseconds = spectrum['params'].get('rtinseconds','-')
+
+
                 charge = int(spectrum['params']['charge'][0])
 
                 pepmass = spectrum['params']['pepmass'][0]
@@ -764,7 +771,7 @@ class MGFConverter(object):
                 for mz, it in zip(mz_array, it_array):
                     peaks.append(str(mz) + ':' + str(it))
                 peaks = ','.join(peaks)
-                output_line = [str(scans), '-', str(precursor_mass), str(charge), '-', peaks]
+                output_line = [str(scans), '-', str(precursor_mass), str(charge), str(rtinseconds), peaks]
                 f_out.write('\t'.join(output_line) + '\n')
 
         finally:

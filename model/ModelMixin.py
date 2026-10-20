@@ -1,15 +1,17 @@
 import torch
 
-class NNBase(torch.nn.Module):
+class ModelMixin(torch.nn.Module):
     @property
     def device(self) -> torch.device:
         """The current device for first parameter of the model."""
         return next(self.parameters()).device
 
+    '''
     @property
     def d_model(self) -> int:
         """The latent dimensionality of the model."""
         return self._d_model
+    
 
     @property
     def nhead(self) -> int:
@@ -30,3 +32,4 @@ class NNBase(torch.nn.Module):
     def dropout(self) -> float:
         """The dropout for the transformer layers."""
         return self._dropout
+    '''

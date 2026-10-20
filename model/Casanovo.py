@@ -1,4 +1,3 @@
-import sys
 import numpy as np
 import torch
 from torch import nn
@@ -6,29 +5,21 @@ from torch import nn
 import math
 import einops
 
-from typing import Optional, Tuple, Union
-
 from sortedcontainers import SortedDict, SortedSet
-from torch.fx.experimental import normalize
 
 from .utils import UTILS
 from pprint import pprint
-from .NNBase import NNBase
+from .ModelMixin import ModelMixin
 
-import torch
-from torch import nn
 import torch.nn.functional as F
 
-from dreams.models.layers.fourier_features import FourierFeatures
+from typing import Sequence, List, Union, Iterable
+
 from dreams.models.layers.feed_forward import FeedForward
-from dreams.models.dreams.layers import TransformerEncoder
-import dreams.utils.spectra as su
-import dreams.utils.data as du
-from dreams.definitions import NIST20, MONA
-from dreams.models.optimization.schedulers import NoamScheduler
 from dreams.models.optimization.losses_metrics import FocalLoss
 
 from .utils import UTILS
+
 
 class FloatEncoder(torch.nn.Module):
     def __init__(
@@ -139,7 +130,7 @@ class PeakEncoder(torch.nn.Module):
 
         return self.combiner(encoded)
 
-class SpectrumEncoder(NNBase):
+class SpectrumEncoder(ModelMixin):
     def __init__(
             self,
             d_model: int = 128,
@@ -149,19 +140,21 @@ class SpectrumEncoder(NNBase):
             dropout: float = 0,
     ):
         super().__init__()
-        self._d_model = d_model
-        self._nhead = n_head
-        self._dim_feedforward = dim_feedforward
-        self._n_layers = n_layers
-        self._dropout = dropout
+        self._utils = UTILS()
+
+        self.d_model = d_model
+        self.n_head = n_head
+        self.dim_feedforward = dim_feedforward
+        self.n_layers = n_layers
+        self.dropout = dropout
 
         self.peak_encoder = PeakEncoder(d_model)
-        # self.peak_encoder = torch.nn.Linear(2, d_model)
+        self.peak_decoder = PeakDecoder({})
 
         # The Transformer layers:
         layer = torch.nn.TransformerEncoderLayer(
             d_model=self.d_model,
-            nhead=self.nhead,
+            nhead=self.n_head,
             dim_feedforward=self.dim_feedforward,
             batch_first=True,
             dropout=self.dropout,
@@ -176,20 +169,22 @@ class SpectrumEncoder(NNBase):
 
     def forward(
             self,
-            mz_array: torch.Tensor,
-            intensity_array: torch.Tensor,
+            #mz_array: torch.Tensor,
+            #intensity_array: torch.Tensor,
+            spectra: torch.Tensor,
+            charges: torch.Tensor,
             *args: torch.Tensor,
             mask: torch.Tensor | None = None,
             **kwargs: dict,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed a batch of mass spectra.
 
         Parameters
         ----------
-        mz_array : torch.Tensor of shape (n_spectra, n_peaks)
-            The zero-padded m/z dimension for a batch of mass spectra.
-        intensity_array : torch.Tensor of shape (n_spectra, n_peaks)
-            The zero-padded intensity dimension for a batch of mass spctra.
+        spectra : torch.Tensor of shape (n_spectra, n_peaks, 2)
+            The zero-padded m/z and intensity dimension for a batch of mass spectra.
+        charges : torch.Tensor of shape (n_spectra, n_peaks)
+            The zero-padded charge dimension for a batch of mass spctra.
         *args : torch.Tensor
             Additional data. These may be used by overwriting the
             `global_token_hook()` method in a subclass.
@@ -209,7 +204,8 @@ class SpectrumEncoder(NNBase):
             The memory mask specifying which elements were padding in X.
 
         """
-        spectra = torch.stack([mz_array, intensity_array], dim=2)
+        mz_array = spectra[:, :, 0]
+        intensity_array = spectra[:, :, 1]
 
         # Create the padding mask:
         src_key_padding_mask = spectra.sum(dim=2) == 0
@@ -235,9 +231,9 @@ class SpectrumEncoder(NNBase):
             mask=mask,
             src_key_padding_mask=src_key_padding_mask,
         )
-        return out, src_key_padding_mask
+        return out, src_key_padding_mask, latent_spectra
 
-class PeptideDecoder(NNBase):
+class PeptideDecoder(ModelMixin):
     def __init__(
             self,
             n_tokens: int,
@@ -548,111 +544,26 @@ class PeptideTokenizer():
         residue = self.reverse_index[idx]
         return (residue)
 
-class DreaMSSpectrumEncoder(nn.Module):
-    """
-    DreaMS Spectrum Encoder
-
-    论文: Nature Biotechnology 2025, DOI: 10.1038/s41587-025-02663-3
-
-    输入: (batch_size, num_peaks, 2) - 每个峰为 [m/z, intensity]
-    输出: (batch_size, d_model) - 谱图级别的嵌入向量 (1024维)
-
-    用途:
-        - 提取谱图嵌入用于下游任务
-        - 作为更大模型的特征提取器
-        - 可以预训练
-    """
-
-    def __init__(self, DreaMS_configs):
+class PeakDecoder(torch.nn.Module):
+    def __init__(self, configs):
         super().__init__()
-        self.d_peak = DreaMS_configs.get('d_peak', 44)
-        self.d_fourier = DreaMS_configs.get('d_fourier', 980)
-        self.d_model = self.d_peak + self.d_fourier  # 1024
-        self.n_layers = DreaMS_configs.get('n_layers', 7)
-        self.n_heads = DreaMS_configs.get('n_heads', 8)
-        self.ff_peak_depth = DreaMS_configs.get('ff_peak_depth', 1)
-        self.dropout = DreaMS_configs.get('dropout', 0.1)
-        self.min_mz = DreaMS_configs.get('min_mz', 0.0001)
-        self.max_mz = DreaMS_configs.get('max_mz', 6000.0)
-        self.hot_mz_bin_size = DreaMS_configs.get('hot_mz_bin_size', 0.05)
-        self.fourier_num_freqs = DreaMS_configs.get('fourier_num_freqs', 36000)
-        self.fourier_strategy = DreaMS_configs.get('fourier_strategy', 'lin_float_int')
-        self.fourier_trainable = DreaMS_configs.get('fourier_trainable', False)
-        self.ff_fourier_depth = DreaMS_configs.get('ff_fourier_depth', 5)
-        self.ff_fourier_d = DreaMS_configs.get('ff_fourier_d', 512)
-        self.ff_out_depth = DreaMS_configs.get('ff_out_depth', 1)
-        self.graphormer_mz_diffs = DreaMS_configs.get('graphormer_mz_diffs', True)
-        self.use_charge_feature = DreaMS_configs.get('use_charge_feature', False)
-        self.pre_norm = DreaMS_configs.get('pre_norm', True)
-        self.bias = DreaMS_configs.get('bias', False)
-        self.no_ffs_bias = DreaMS_configs.get('no_ffs_bias', False)
-        self.focal_loss_gamma = DreaMS_configs.get('focal_loss_gamma', 5)
+        self.max_mz = configs.get('peak_max_mz', 6000.0)
+        self.bin_size = configs.get('hot_mz_bin_size', 0.05)
+        self.num_classes = self.num_hot_classes(max_val=self.max_mz, bin_size=self.bin_size)
 
-        self._utils = UTILS()
+        self.d_model = configs.get('d_model', 1024)
+        self.dropout = configs.get('dropout', 0.1)
 
-        # 计算 token 维度
-        token_dim = 2  # [m/z, intensity]
+        #self.ff_hidden_dim = configs.get('ff_hidden_dim', self.d_model)
+        self.ff_depth = configs.get('ff_depth', 5)
 
-        if self.use_charge_feature:
-            token_dim += 1  # [m/z, intensity, charge]
-
-        # ========== 1. 峰嵌入层 ==========
-        self.ff_peak = FeedForward(
-            in_dim=token_dim,
-            out_dim=self.d_peak,
-            hidden_dim=self.d_peak,
-            depth=self.ff_peak_depth,
-            dropout=self.dropout,
-            bias=not self.no_ffs_bias
-        )
-
-        # ========== 2. 傅里叶特征编码器 ==========
-        self.fourier_enc = FourierFeatures(
-            strategy=self.fourier_strategy,
-            num_freqs=self.fourier_num_freqs,
-            x_min=self.min_mz, #x_min=args.dformat.max_tbxic_stdev if not args.fourier_min_freq else args.fourier_min_freq,
-            x_max=self.max_mz, #x_max=args.dformat.max_mz,
-            trainable=self.fourier_trainable
-        )
-
-        # 论文：4 层 FFN 将傅里叶特征映射到 d_fourier
-        self.ff_fourier = FeedForward(
-            in_dim=self.fourier_enc.num_features(),  # num_freqs * 2 (sin + cos)
-            out_dim=self.d_fourier,
-            hidden_dim=self.ff_fourier_d,
-            depth=self.ff_fourier_depth,
-            dropout=self.dropout,
-            bias=not self.no_ffs_bias
-        )
-
-        # ========== 4. Transformer 编码器 ==========
-        class Args:
-            pass
-
-        args = Args()
-        args.d_model = self.d_model
-        args.n_heads = self.n_heads
-        args.n_layers = self.n_layers
-        args.att_dropout = self.dropout
-        args.residual_dropout = self.dropout
-        args.ff_dropout = self.dropout
-        args.pre_norm = self.pre_norm
-        args.vanilla_transformer = False
-        args.scnorm = False
-        args.attn_mech = 'dot-product'
-        args.no_transformer_bias = True  # 论文：无偏置
-        args.d_graphormer_params = 0  # 论文中无参数，直接求和
-
-        self.transformer_encoder = TransformerEncoder(args)
-
-        # ========== 5. 预训练输出头 ==========
-
+        # ========== 预训练输出头 ==========
         # m/z 预测头（分类）
         self.ff_out = FeedForward(
             in_dim=self.d_model,
             hidden_dim=self.d_model,
-            out_dim=su.num_hot_classes(max_val=self.max_mz, bin_size=self.hot_mz_bin_size), #(max_val=args.dformat.max_mz, bin_size=args.hot_mz_bin_size),
-            depth=self.ff_out_depth,
+            out_dim=self.num_classes,
+            depth=self.ff_depth,
             act_last=False,
             dropout=self.dropout,
             bias=True
@@ -662,79 +573,35 @@ class DreaMSSpectrumEncoder(nn.Module):
         self.ff_out_intens = FeedForward(
             in_dim=self.d_model,
             hidden_dim=self.d_model,
-            out_dim=su.num_hot_classes(max_val=1.0, bin_size=0.05),  # 20 个强度 bin (0-1, 0.05步长)
-            depth=self.ff_out_depth,
+            out_dim=self.num_hot_classes(max_val=1.0, bin_size=0.05),  # 20 个强度 bin (0-1, 0.05步长)
+            depth=self.ff_depth,
             act_last=False,
             dropout=self.dropout,
             bias=False
         )
 
-        # 损失函数
-        self.mz_masking_loss = FocalLoss(gamma=self.focal_loss_gamma, return_softmax_out=True)
+    def num_hot_classes(self, max_val: float, bin_size: float) -> int:
+        num_classes = max_val / bin_size
+        assert num_classes == int(num_classes)
+        return int(num_classes)
 
-    def __normalize_spec(self, spectra):
-        """
-        只归一化 m/z 值，intensity 和 charge 保持不变
-        """
-        max_mz_in_data = spectra[..., 0].max().item()
-        if max_mz_in_data > self.max_mz:
-            raise ValueError('Max m/z value('+str(max_mz_in_data)+') in sepctra exceeded max_mz!')
-        normalized_spec = spectra.clone()
-        normalized_spec[..., 0] = normalized_spec[..., 0] / self.max_mz
-        return normalized_spec
+    def to_classes(self,
+            vals: torch.Tensor,
+            special_vals: List[float] = ()
+    ) -> torch.Tensor:
+        """ Assumes that last dimension of mzs is singleton. """
+        special_masks = [vals == v for v in special_vals]
+        classes = torch.round(vals / self.bin_size).long()
+        classes = classes.clamp(max=self.num_classes - 1)  # clamp not to have a separate class for max_mz
+        for i, m in enumerate(special_masks):
+            classes[m] = self.num_classes + i
+        return classes
 
-    def forward(
-            self,
-            spectra: torch.Tensor,
-            charges: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        核心编码方法，返回所有 token 的完整嵌入（内部使用）
+    def to_hot(self, vals: torch.Tensor, dtype=torch.double):
+        """ Assumes that last dimension of mzs is singleton. """
+        classes = self.to_classes(vals)
+        hots = F.one_hot(classes, num_classes=self.num_classes)
+        return hots.squeeze(dim=-2).to(dtype)
 
-        Args:
-            spectra: 谱图张量 (batch, 1+peaks, 2)，已包含 precursor token（强度 1.1）
-            charges: 电荷数 (batch,1)，可选
-
-        Returns:
-            x: (batch, 1+peaks, d_model) 所有 token 的嵌入
-                - x[:, 0, :] 是 precursor token 的嵌入（代表整个谱图）
-                - x[:, 1:, :] 是碎片峰的嵌入
-            padding_mask: (batch, 1+peaks) padding mask，True 表示填充位置
-            graphormer_dists: Graphormer 距离偏置
-        """
-
-        #normalized_spec = self.__normalize_spec(spectra)
-        padding_mask = spectra[:, :, 0] == 0
-        #self._utils.parse_var(padding_mask)
-
-        #添加电荷特征（可选）
-        if self.use_charge_feature:
-            if charges is None:
-                raise ValueError("charges must be provided when charge_feature=True")
-            charge_features = (~padding_mask) * charges
-            #self._utils.parse_var(charge_features)
-            spectra = torch.cat([spectra, charge_features.unsqueeze(-1)], dim=-1)
-        #self._utils.parse_var(spectra)
-
-        normalized_spectra = self.__normalize_spec(spectra)
-        #self._utils.parse_var(normalized_spectra)
-
-        peak_embs = self.ff_peak(normalized_spectra)
-        #self._utils.parse_var(peak_embs)
-
-        # 傅里叶特征
-        fourier_features = self.ff_fourier(self.fourier_enc(spectra[..., [0]]))
-        #self._utils.parse_var(fourier_features)
-        #拼接
-        x = torch.cat([peak_embs, fourier_features], dim=-1)
-        #self._utils.parse_var(x)
-
-        #Graphormer 距离偏置
-        graphormer_dists = None
-        if self.graphormer_mz_diffs:
-            graphormer_dists = fourier_features.unsqueeze(2) - fourier_features.unsqueeze(1)
-
-        #self._utils.parse_var(graphormer_dists)
-        #Transformer 编码
-        x = self.transformer_encoder(x, padding_mask, graphormer_dists)
-        return x, padding_mask, graphormer_dists
+    def forward(self, x):
+        return self.ff_out(x)
