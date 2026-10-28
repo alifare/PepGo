@@ -15,11 +15,12 @@ import torch.nn.functional as F
 from .ModelMixin import ModelMixin
 from .utils import UTILS
 
+
 #-------------------------Classes for sharing-------------------------
 
 #-------------------------Classes for Spectra-------------------------
 class FourierFeatures(torch.nn.Module):
-    def __init__(self, strategy, x_min, x_max, trainable=True, funcs='both', sigma=10, num_freqs=512, fourier_power=2.0):
+    def __init__(self, strategy, x_min, x_max, trainable=False, funcs='both', sigma=10, num_freqs=512, fourier_power=2.0):
         assert strategy in {'random', 'voronov_et_al', 'lin_float_int', 'voronov_power'}
         assert funcs in {'both', 'sin', 'cos'}
         assert x_min < 1
@@ -163,23 +164,25 @@ class PrecursorEncoder(nn.Module):
         # 注意：num_freqs 和峰保持一致是为了代码对称；
         # 从信息量角度，前体用 512 也够，但保持一致更易维护。
 
-        self.d_model = configs.get('d_model', 1024)
+        self.d_model = configs.get('d_model', 512)
         self.max_charge = configs.get('max_charge', 10)
         self.strategy = configs.get('fourier_strategy','voronov_power')  # 和峰一致
-        self.x_min = 0.1  # 分辨率：能分辨 0.1 Da 的差异
-        self.x_max = 6000.0  # 覆盖范围：最大母离子质量
-        self.num_freqs = 1024
-        self.fourier_power = 1.0  # 对数均匀，粗粒度条件
-        self.trainable = False
+
+        self.precursor_mass_fourier_num_freqs = configs.get('precursor_mass_fourier_num_freqs', 256)
+        self.precursor_mass_fourier_power = configs.get('precursor_mass_fourier_power', 1.0)
+        self.fourier_trainable = configs.get('fourier_trainable', False)
         self.funcs = 'both'  # 和峰一致
+
+        self.precursor_min_mass = configs.get('precursor_min_mass', 0.1)
+        self.precursor_max_mass = configs.get('precursor_max_mass', 6000.0)
 
         self.precursor_mass_fourier = FourierFeatures(
             strategy=self.strategy,  # 和峰一致
-            x_min=self.x_min,  # 分辨率：能分辨 0.1 Da 的差异
-            x_max=self.x_max,  # 覆盖范围：最大母离子质量
-            num_freqs=self.num_freqs,
-            fourier_power=self.fourier_power, # 对数均匀，粗粒度条件
-            trainable=self.trainable,
+            x_min=self.precursor_min_mass,  # 分辨率：能分辨 0.1 Da 的差异
+            x_max=self.precursor_max_mass,  # 覆盖范围：最大母离子质量
+            num_freqs=self.precursor_mass_fourier_num_freqs,
+            fourier_power=self.precursor_mass_fourier_power, # 对数均匀，粗粒度条件
+            trainable=self.fourier_trainable,
             funcs=self.funcs  # 和峰一致
         )
 
@@ -210,81 +213,87 @@ class PeakEncoder(nn.Module):
         super().__init__()
         self._utils = UTILS()
 
-        self.d_model = configs.get('d_model', 1024)
         self.fourier_strategy = configs.get('fourier_strategy', 'voronov_power')
 
-        self.min_mz = configs.get('peak_min_mz', 0.001)
-        self.max_mz = configs.get('peak_max_mz', 6000.0)
-        self.mz_num_freqs = configs.get('peak_mz_fourier_num_freqs', 1024)
-        self.mz_fourier_power = configs.get('peak_mz_fourier_power', 2.0)
+        self.peak_min_mz = configs.get('peak_min_mz', 0.001)
+        self.peak_max_mz = configs.get('peak_max_mz', 6000.0)
+        self.peak_mz_fourier_num_freqs = configs.get('peak_mz_fourier_num_freqs', 256)
+        self.peak_mz_fourier_power = configs.get('peak_mz_fourier_power', 2.0)
 
-        self.echo_num_freqs = configs.get('echo_num_freqs', 64)
+        self.echo_min_mz = configs.get('echo_min_mz', self.peak_min_mz)
+        self.echo_max_mz = configs.get('echo_max_mz', self.peak_max_mz)
+        self.echo_fourier_num_freqs = configs.get('echo_fourier_num_freqs', 64)
         self.echo_fourier_power = configs.get('echo_fourier_power', 1.0)
 
-        self.min_intensity = configs.get('min_intensity', 1e-6)
-        self.max_intensity = configs.get('max_intensity', 1.0)
-        self.intensity_num_freqs = configs.get('intensity_num_freqs', 512)
-        self.intensity_fourier_power = configs.get('intensity_fourier_power', 1.0)
+        self.peak_min_intensity = configs.get('peak_min_intensity', 1e-6)
+        self.peak_max_intensity = configs.get('peak_max_intensity', 1.0)
+        self.peak_intensity_fourier_num_freqs = configs.get('peak_intensity_fourier_num_freqs', 256)
+        self.peak_intensity_fourier_power = configs.get('peak_intensity_fourier_power', 1.0)
 
         self.fourier_trainable = configs.get('fourier_trainable', False)
         self.use_echo = configs.get('use_echo', True)
-
-        self.ff_out_dim = configs.get('ff_out_dim', self.d_model)
-        self.ff_hidden_dim = configs.get('ff_hidden_dim', self.d_model)
-        self.ff_depth = configs.get('ff_depth', 5)
         self.dropout = configs.get('dropout', 0.1)
-        self.ff_bias = configs.get('ff_bias', True)
+
 
         # ========== 傅里叶特征编码器 for mz ==========
         self.fourier_mz = FourierFeatures(
             strategy = self.fourier_strategy,
-            num_freqs = self.mz_num_freqs,
-            fourier_power = self.mz_fourier_power,
-            x_min = self.min_mz,
-            x_max = self.max_mz,
+            num_freqs = self.peak_mz_fourier_num_freqs,
+            fourier_power = self.peak_mz_fourier_power,
+            x_min = self.peak_min_mz,
+            x_max = self.peak_max_mz,
             trainable = self.fourier_trainable
         )
 
         # ========== 傅里叶特征编码器 for echo ==========
         self.fourier_echo = FourierFeatures(
             strategy = self.fourier_strategy,
-            num_freqs = self.echo_num_freqs,
+            num_freqs = self.echo_fourier_num_freqs,
             fourier_power = self.echo_fourier_power,
-            x_min = self.min_mz,
-            x_max = self.max_mz,
+            x_min = self.echo_min_mz,
+            x_max = self.echo_max_mz,
             trainable = self.fourier_trainable
         )
 
         # ========== 傅里叶特征编码器 for intensity ==========
         self.fourier_intensity = FourierFeatures(
             strategy = self.fourier_strategy,
-            num_freqs = self.intensity_num_freqs,
-            fourier_power = self.intensity_fourier_power,
-            x_min = self.min_intensity,
-            x_max = self.max_intensity,
+            num_freqs = self.peak_intensity_fourier_num_freqs,
+            fourier_power = self.peak_intensity_fourier_power,
+            x_min = self.peak_min_intensity,
+            x_max = self.peak_max_intensity,
             trainable = self.fourier_trainable
         )
 
-        #print(self.fourier_mz.num_features(), self.ff_out_dim, self.ff_hidden_dim)
-        # FFN 将傅里叶特征映射到 ff_out_dim
+        self.d_model = configs.get('d_model', 512)
+        self.peak_feedforward_hidden_dim = configs.get('peak_feedforward_hidden_dim', 2 * self.fourier_mz.num_features())
+        self.peak_feedforward_depth = configs.get('peak_feedforward_depth', 5)
+        self.ff_bias = configs.get('ff_bias', True)
+
+        #self._utils.parse_var(self.fourier_mz.num_features(), 'self.fourier_mz.num_features()')
+        #self._utils.parse_var(self.peak_feedforward_hidden_dim, 'self.peak_feedforward_hidden_dim')
+        #self._utils.parse_var(self.peak_feedforward_depth, 'self.peak_feedforward_depth')
+
+        # FFN 将傅里叶特征映射到 self.d_model
         self.ff_fourier_mz = FeedForward(
             in_dim = self.fourier_mz.num_features(),
-            out_dim = self.ff_out_dim,
-            hidden_dim = self.ff_hidden_dim,
-            depth = self.ff_depth,
+            out_dim =self.d_model,
+            hidden_dim = self.peak_feedforward_hidden_dim,
+            depth = self.peak_feedforward_depth,
             dropout = self.dropout,
             bias = self.ff_bias
         )
 
-        # FFN 将傅里叶特征映射到 ff_out_dim
+        # FFN 将傅里叶特征映射到 self.d_model
         self.ff_fourier_intensity = FeedForward(
             in_dim = self.fourier_intensity.num_features(),
-            out_dim = self.ff_out_dim,
-            hidden_dim = self.ff_hidden_dim,
-            depth = self.ff_depth,
+            out_dim = self.d_model,
+            hidden_dim = self.peak_feedforward_hidden_dim,
+            depth = self.peak_feedforward_depth,
             dropout = self.dropout,
             bias = self.ff_bias
         )
+        #sys.exit()
 
     def num_features(self):
         return self.ff_fourier_mz.out_dim, self.ff_fourier_intensity.out_dim
@@ -311,15 +320,12 @@ class PeakEncoder(nn.Module):
 class PeakDecoder(torch.nn.Module):
     def __init__(self, configs):
         super().__init__()
-        self.max_mz = configs.get('peak_max_mz', 6000.0)
+        self.peak_max_mz = configs.get('peak_max_mz', 6000.0)
         self.bin_size = configs.get('hot_mz_bin_size', 0.05)
-        self.num_classes = self.num_hot_classes(max_val=self.max_mz, bin_size=self.bin_size)
+        self.num_classes = self.num_hot_classes(max_val=self.peak_max_mz, bin_size=self.bin_size)
 
-        self.d_model = configs.get('d_model', 1024)
+        self.d_model = configs.get('d_model', 512)
         self.dropout = configs.get('dropout', 0.1)
-
-        #self.ff_hidden_dim = configs.get('ff_hidden_dim', self.d_model)
-        self.ff_depth = configs.get('ff_depth', 5)
 
         # ========== 预训练输出头 ==========
         # m/z 预测头（分类）
@@ -327,7 +333,7 @@ class PeakDecoder(torch.nn.Module):
             in_dim=self.d_model,
             hidden_dim=self.d_model,
             out_dim=self.num_classes,
-            depth=self.ff_depth,
+            depth=1,
             act_last=False,
             dropout=self.dropout,
             bias=True
@@ -338,7 +344,7 @@ class PeakDecoder(torch.nn.Module):
             in_dim=self.d_model,
             hidden_dim=self.d_model,
             out_dim=self.num_hot_classes(max_val=1.0, bin_size=0.05),  # 20 个强度 bin (0-1, 0.05步长)
-            depth=self.ff_depth,
+            depth=1,
             act_last=False,
             dropout=self.dropout,
             bias=False
@@ -381,9 +387,7 @@ class SpectrumEncoder(nn.Module):
         self._utils = UTILS()
         self.focal_loss_gamma = configs.get('focal_loss_gamma', 5)
 
-        d_echo_params = configs.get('d_echo_params', None)
-        if d_echo_params is None:
-            configs.update({'d_echo_params': 2 * configs.get('echo_num_freqs', 64)})
+        self.dim_feedforward = configs.get('dim_feedforward')
 
         self.precursor_encoder = PrecursorEncoder(configs)
         self.peak_encoder = PeakEncoder(configs)
@@ -424,14 +428,11 @@ class TransformerEncoder(nn.Module):
     def __init__(self, configs):
         super().__init__()
         self._utils = UTILS()
-        self.d_model = configs.get('d_model', 1024)
+        self.d_model = configs.get('d_model', 512)
         self.n_heads = configs.get('n_heads', 8)
         self.dim_feedforward = configs.get('dim_feedforward', 1024)
         self.n_layers = configs.get('n_layers', 7)
         self.dropout = configs.get('dropout', 0.1)
-
-        self.residual_dropout = configs.get('residual_dropout', self.dropout)
-        self.att_dropout = configs.get('att_dropout', self.dropout)
 
         self.pre_norm = configs.get('pre_norm', True)
         self.scnorm = configs.get('scnorm', False)
@@ -476,20 +477,20 @@ class TransformerEncoder(nn.Module):
         residual = x
         x = att_scale(x) if pre_norm else x
         x, _ = att(q=x, k=x, v=x, mask=src_mask, echoes=echoes)
-        x = residual + F.dropout(x, p=self.residual_dropout, training=self.training)
+        x = residual + F.dropout(x, p=self.dropout, training=self.training)
         x = att_scale(x) if post_norm else x
 
         # ---- Cross-Attention to Precursor ----
         if ref_kv is not None:
             ref_out, _ = self.ref_atts[i](q=x, k=ref_kv, v=ref_kv, mask=None, echoes=None)
-            ref_out = F.dropout(ref_out, p=self.residual_dropout, training=self.training)
+            ref_out = F.dropout(ref_out, p=self.dropout, training=self.training)
             x = x + self.ref_gates[i] * ref_out
 
         # ---- Feed-Forward ----
         residual = x
         x = ff_scale(x) if pre_norm else x
         x = ff(x)
-        x = residual + F.dropout(x, p=self.residual_dropout, training=self.training)
+        x = residual + F.dropout(x, p=self.dropout, training=self.training)
         x = ff_scale(x) if post_norm else x
         return x
 
@@ -512,7 +513,7 @@ class TransformerEncoder(nn.Module):
 
         src_mask = padding_mask
 
-        x = F.dropout(peaks, p=self.residual_dropout, training=self.training)
+        x = F.dropout(peaks, p=self.dropout, training=self.training)
         for i in range(self.n_layers):
             if self._gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
@@ -593,7 +594,7 @@ class MultiheadAttention(nn.Module):
     def __init__(self, configs, mhatype='regular'):
         super().__init__()
         self._utils = UTILS()
-        self.d_model = configs.get('d_model', 1024)
+        self.d_model = configs.get('d_model', 512)
         self.n_heads = configs.get('n_heads', 8)
         self.dropout = configs.get('dropout', 0.1)
         self.use_transformer_bias = configs.get('use_transformer_bias', False)
@@ -679,8 +680,6 @@ class MultiheadAttention(nn.Module):
                 att_bias = echoes.sum(dim=-1).unsqueeze(1)
             att_weights = att_weights + att_bias
 
-
-
         if mask is not None:
             att_weights.masked_fill_(mask.unsqueeze(1).unsqueeze(-1), -1e9)
 
@@ -733,17 +732,18 @@ class tFeedForward(nn.Module):
     """FeedForward"""
     def __init__(self, configs):
         super().__init__()
+        self._utils = UTILS()
         self.dropout = configs.get('dropout', 0.1)
-        self.d_model = configs.get('d_model', 1024)
-        self.ff_dim = 4 * self.d_model
-        self.use_transformer_bias = configs.get('use_transformer_bias', False)
+        self.d_model = configs.get('d_model')
+        self.dim_feedforward = configs.get('dim_feedforward')
 
-        self.in_proj = nn.Linear(self.d_model, self.ff_dim, bias=self.use_transformer_bias)
-        self.out_proj = nn.Linear(self.ff_dim, self.d_model, bias=self.use_transformer_bias)
+        self.use_transformer_bias = configs.get('use_transformer_bias', False)
+        self.in_proj = nn.Linear(self.d_model, self.dim_feedforward, bias=self.use_transformer_bias)
+        self.out_proj = nn.Linear(self.dim_feedforward, self.d_model, bias=self.use_transformer_bias)
 
         # initializing
         mean = 0
-        std = (2 / (self.ff_dim + self.d_model)) ** 0.5
+        std = (2 / (self.dim_feedforward + self.d_model)) ** 0.5
         nn.init.normal_(self.in_proj.weight, mean=mean, std=std)
         nn.init.normal_(self.out_proj.weight, mean=mean, std=std)
         if self.use_transformer_bias:
@@ -840,62 +840,58 @@ class PositionalEncoder(FloatEncoder):
 class PeptideDecoder(ModelMixin):
     def __init__(
             self,
-            n_tokens: int,
-            d_model: int = 128,
-            n_head: int = 8,
-            dim_feedforward: int = 1024,
-            n_layers: int = 1,
-            dropout: float = 0,
-            positional_encoder: PositionalEncoder | bool = True,
-            padding_int: int | None = None,
-            max_charge: int = 10,
+            configs,
+            n_tokens: int = None,
+            padding_int: int  = None,
+            positional_encoder: PositionalEncoder | bool = True
     ) -> None:
         """Initialize a PeptideDecoder."""
         super().__init__()
-        self._d_model = d_model
-        self._nhead = n_head
-        self._dim_feedforward = dim_feedforward
-        self._n_layers = n_layers
-        self._dropout = dropout
+        self.d_model = configs.get('d_model', 512)
+        self.n_heads = configs.get('n_heads', 8)
+        self.dim_feedforward = configs.get('dim_feedforward', 1024)
+        self.n_layers = configs.get('n_layers', 9)
+        self.dropout = configs.get('dropout', 0.0)
+        self.max_charge = configs.get('max_charge', 10)
 
         if (isinstance(n_tokens, int) and isinstance(padding_int, int)):
-            self._n_tokens = n_tokens
-            self._padding_int = padding_int
+            self.n_tokens = n_tokens
+            self.padding_int = padding_int
         else:
             raise ValueError("n_tokens and padding_int must be specified as an int")
 
         if callable(positional_encoder):
             self.positional_encoder = positional_encoder
         elif positional_encoder:
-            self.positional_encoder = PositionalEncoder(d_model)
+            self.positional_encoder = PositionalEncoder(self.d_model)
         else:
             self.positional_encoder = torch.nn.Identity()
 
         self.token_encoder = torch.nn.Embedding(
-            self._n_tokens + 1,
-            d_model,
-            padding_idx=self._padding_int,
+            self.n_tokens + 1,
+            self.d_model,
+            padding_idx=self.padding_int,
         )
 
         # Additional model components
         layer = torch.nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=n_head,
-            dim_feedforward=dim_feedforward,
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=self.dim_feedforward,
             batch_first=True,
-            dropout=dropout,
+            dropout=self.dropout,
         )
 
         self.transformer_decoder = torch.nn.TransformerDecoder(
             layer,
-            num_layers=n_layers,
+            num_layers=self.n_layers,
         )
 
-        self.charge_encoder = torch.nn.Embedding(max_charge, d_model)
-        self.mass_encoder = FloatEncoder(d_model)
+        self.charge_encoder = torch.nn.Embedding(self.max_charge, self.d_model)
+        self.mass_encoder = FloatEncoder(self.d_model)
 
         self.final = torch.nn.Linear(
-            d_model, self.token_encoder.num_embeddings
+            self.d_model, self.token_encoder.num_embeddings
         )
 
     def embed(
@@ -970,9 +966,7 @@ class PeptideDecoder(ModelMixin):
 
         if tgt_mask is None:
             sz = encoded.shape[1]
-            tgt_mask = ~torch.triu(torch.ones(sz, sz, dtype=torch.bool)).transpose(0, 1)
-            #tgt_mask = torch.triu(torch.ones(sz, sz, dtype=torch.bool), diagonal=1)
-            #tgt_mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
+            tgt_mask = torch.triu(torch.ones(sz, sz, dtype=torch.bool), diagonal=1)
             tgt_mask = tgt_mask.to(self.device)
 
         return self.transformer_decoder(

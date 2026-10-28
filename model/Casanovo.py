@@ -131,10 +131,11 @@ class PeakEncoder(torch.nn.Module):
         return self.combiner(encoded)
 
 class SpectrumEncoder(ModelMixin):
+    '''
     def __init__(
             self,
             d_model: int = 128,
-            n_head: int = 8,
+            n_heads: int = 8,
             dim_feedforward: int = 1024,
             n_layers: int = 1,
             dropout: float = 0,
@@ -143,18 +144,27 @@ class SpectrumEncoder(ModelMixin):
         self._utils = UTILS()
 
         self.d_model = d_model
-        self.n_head = n_head
+        self.n_heads = n_heads
         self.dim_feedforward = dim_feedforward
         self.n_layers = n_layers
         self.dropout = dropout
+    '''
+    def __init__(self, configs):
+        super().__init__()
+        self._utils = UTILS()
 
-        self.peak_encoder = PeakEncoder(d_model)
+        self.d_model = configs.get('d_model', 512)
+        self.n_heads = configs.get('n_heads', 8)
+        self.dim_feedforward = configs.get('dim_feedforward', 1024)
+        self.n_layers = configs.get('n_layers', 9)
+        self.dropout = configs.get('dropout', 0.0)
+        self.peak_encoder = PeakEncoder(self.d_model)
         self.peak_decoder = PeakDecoder({})
 
         # The Transformer layers:
         layer = torch.nn.TransformerEncoderLayer(
             d_model=self.d_model,
-            nhead=self.n_head,
+            nhead=self.n_heads,
             dim_feedforward=self.dim_feedforward,
             batch_first=True,
             dropout=self.dropout,
@@ -165,7 +175,7 @@ class SpectrumEncoder(ModelMixin):
             num_layers=self.n_layers,
         )
 
-        self.latent_spectrum = torch.nn.Parameter(torch.randn(1, 1, d_model))
+        self.latent_spectrum = torch.nn.Parameter(torch.randn(1, 1, self.d_model))
 
     def forward(
             self,
@@ -234,11 +244,12 @@ class SpectrumEncoder(ModelMixin):
         return out, src_key_padding_mask, latent_spectra
 
 class PeptideDecoder(ModelMixin):
+    '''
     def __init__(
             self,
             n_tokens: int,
             d_model: int = 128,
-            n_head: int = 8,
+            n_heads: int = 8,
             dim_feedforward: int = 1024,
             n_layers: int = 1,
             dropout: float = 0,
@@ -248,50 +259,66 @@ class PeptideDecoder(ModelMixin):
     ) -> None:
         """Initialize a PeptideDecoder."""
         super().__init__()
-        self._d_model = d_model
-        self._nhead = n_head
-        self._dim_feedforward = dim_feedforward
-        self._n_layers = n_layers
-        self._dropout = dropout
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.dim_feedforward = dim_feedforward
+        self.n_layers = n_layers
+        self.dropout = dropout
+    '''
+    def __init__(
+            self,
+            configs,
+            n_tokens: int = None,
+            padding_int: int  = None,
+            positional_encoder: PositionalEncoder | bool = True
+    ) -> None:
+        """Initialize a PeptideDecoder."""
+        super().__init__()
+        self.d_model = configs.get('d_model', 512)
+        self.n_heads = configs.get('n_heads', 8)
+        self.dim_feedforward = configs.get('dim_feedforward', 1024)
+        self.n_layers = configs.get('n_layers', 9)
+        self.dropout = configs.get('dropout', 0.0)
+        self.max_charge = configs.get('max_charge', 10)
 
         if (isinstance(n_tokens, int) and isinstance(padding_int, int)):
-            self._n_tokens = n_tokens
-            self._padding_int = padding_int
+            self.n_tokens = n_tokens
+            self.padding_int = padding_int
         else:
             raise ValueError("n_tokens and padding_int must be specified as an int")
 
         if callable(positional_encoder):
             self.positional_encoder = positional_encoder
         elif positional_encoder:
-            self.positional_encoder = PositionalEncoder(d_model)
+            self.positional_encoder = PositionalEncoder(self.d_model)
         else:
             self.positional_encoder = torch.nn.Identity()
 
         self.token_encoder = torch.nn.Embedding(
-            self._n_tokens + 1,
-            d_model,
-            padding_idx=self._padding_int,
+            self.n_tokens + 1,
+            self.d_model,
+            padding_idx=self.padding_int,
         )
 
         # Additional model components
         layer = torch.nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=n_head,
-            dim_feedforward=dim_feedforward,
+            d_model=self.d_model,
+            nhead=self.n_heads,
+            dim_feedforward=self.dim_feedforward,
             batch_first=True,
-            dropout=dropout,
+            dropout=self.dropout,
         )
 
         self.transformer_decoder = torch.nn.TransformerDecoder(
             layer,
-            num_layers=n_layers,
+            num_layers=self.n_layers,
         )
 
-        self.charge_encoder = torch.nn.Embedding(max_charge, d_model)
-        self.mass_encoder = FloatEncoder(d_model)
+        self.charge_encoder = torch.nn.Embedding(self.max_charge, self.d_model)
+        self.mass_encoder = FloatEncoder(self.d_model)
 
         self.final = torch.nn.Linear(
-            d_model, self.token_encoder.num_embeddings
+            self.d_model, self.token_encoder.num_embeddings
         )
 
     def embed(

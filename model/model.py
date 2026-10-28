@@ -198,9 +198,9 @@ class MODEL:
         self._utils = UTILS()
         self.Trainer_configs = self._configs.get('Model', {}).get('Trainer', {})
         self.Pretrain_configs = self._configs.get('Model', {}).get('Pretrain', {})
-        self.Basic_configs = self._configs.get('Model', {}).get('Basic', {})
+        self.Peak_configs = self._configs.get('Model', {}).get('Peak', {})
 
-        self.max_peaks = self.Basic_configs.get('max_peaks',300)
+        self.max_peaks = self.Peak_configs.get('max_peak',300)
 
         # Initialized later:
         self.tmp_dir = None
@@ -394,7 +394,7 @@ class MODEL:
         train_spec_set = HDF(train_spec)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
-            batch_size=self.Trainer_configs.get('train_batch_size'),
+            batch_size=self.train_batch_size,
             num_workers=self.Trainer_configs.get('min_workers'),
             collate_fn=self.spec_collate,
             shuffle=True,
@@ -404,7 +404,7 @@ class MODEL:
             valid_spec_set = HDF(valid_spec)
             valid_spec_set_loader = torch.utils.data.DataLoader(
                 valid_spec_set,
-                batch_size=self.Trainer_configs.get('valid_batch_size'),
+                batch_size=self.valid_batch_size,
                 num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
@@ -422,7 +422,7 @@ class MODEL:
         train_spec_set = HDF(train_spec, reverse = True)
         train_spec_set_loader = torch.utils.data.DataLoader(
             train_spec_set,
-            batch_size=self.Trainer_configs.get('train_batch_size'),
+            batch_size=self.train_batch_size,
             num_workers=self.Trainer_configs.get('min_workers'),
             collate_fn=self.spec_collate,
             shuffle=True,
@@ -432,7 +432,7 @@ class MODEL:
             valid_spec_set = HDF(valid_spec, reverse=True)
             valid_spec_set_loader = torch.utils.data.DataLoader(
                 valid_spec_set,
-                batch_size=self.Trainer_configs.get('valid_batch_size'),
+                batch_size=self.valid_batch_size,
                 num_workers=self.Trainer_configs.get('min_workers'),
                 collate_fn=self.spec_collate
             )
@@ -473,8 +473,8 @@ class MODEL:
         spec_set = HDF(spec_file)
         spec_set_loader = torch.utils.data.DataLoader(
             spec_set,
-            batch_size = self.Trainer_configs.get('test_batch_size'),
-            num_workers= self.Trainer_configs.get('test_batch_size'),
+            batch_size=self.test_batch_size,
+            num_workers=self.Trainer_configs.get('min_workers'),
             collate_fn=self.spec_collate,
             shuffle=False,
             persistent_workers=False
@@ -663,25 +663,6 @@ class MODEL:
                 if(user_cosine is None):
                     self.Trainer_configs['cosine_schedule_period_iters'] = correct_cosine_period
 
-        if (prescan_spec is not None):
-            prescan_batch_size=self.Trainer_configs.get('train_batch_size')
-            prescan_min_workers=self.Trainer_configs.get('min_workers')
-            if(mode=='pretrain'):
-                prescan_batch_size=self.Pretrain_configs.get('pretrain_batch_size')
-                prescan_min_workers=self.Pretrain_configs.get('min_workers')
-
-            prescan_spec_set = HDF(prescan_spec)
-            prescan_spec_set_loader = torch.utils.data.DataLoader(
-                prescan_spec_set,
-                batch_size=prescan_batch_size,
-                num_workers=prescan_min_workers,
-                collate_fn=self.spec_collate,
-                shuffle=True,
-            )
-
-            prescan(prescan_spec_set_loader)
-            del prescan_spec_set, prescan_spec_set_loader
-
         if(mode=='pretrain'):
             model_dir_encoder = os.path.join(models_dir, 'ckpt_pretrain')
             self._utils.make_dir(model_dir_encoder)
@@ -699,6 +680,27 @@ class MODEL:
             self.Transformer_N = self.initialize_one_model(mode=mode, encoder=encoder, model_dir=model_dir_N)
             self.Transformer_C = self.initialize_one_model(mode=mode, encoder=encoder, model_dir=model_dir_C)
 
+            self.train_batch_size, self.valid_batch_size, self.test_batch_size = self.Transformer_N.train_sizes
+            #print(self.train_batch_size, self.valid_batch_size, self.test_batch_size)
+
+        if (prescan_spec is not None):
+            prescan_batch_size=self.train_batch_size
+            prescan_min_workers=self.Trainer_configs.get('min_workers')
+            if(mode=='pretrain'):
+                prescan_batch_size=self.Pretrain_configs.get('pretrain_batch_size')
+                prescan_min_workers=self.Pretrain_configs.get('min_workers')
+
+            prescan_spec_set = HDF(prescan_spec)
+            prescan_spec_set_loader = torch.utils.data.DataLoader(
+                prescan_spec_set,
+                batch_size=prescan_batch_size,
+                num_workers=prescan_min_workers,
+                collate_fn=self.spec_collate,
+                shuffle=True,
+            )
+
+            prescan(prescan_spec_set_loader)
+            del prescan_spec_set, prescan_spec_set_loader
 
     def initialize_one_model(self, mode=None, encoder=None, model_dir=None) -> None:
         model_params = dict(configs=self._configs, meta=self._meta)

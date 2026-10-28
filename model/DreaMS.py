@@ -102,7 +102,7 @@ class PeptideDecoder(ModelMixin):
             self,
             n_tokens: int,
             d_model: int = 128,
-            n_head: int = 8,
+            n_heads: int = 8,
             dim_feedforward: int = 1024,
             n_layers: int = 1,
             dropout: float = 0,
@@ -113,7 +113,7 @@ class PeptideDecoder(ModelMixin):
         """Initialize a PeptideDecoder."""
         super().__init__()
         self._d_model = d_model
-        self._nhead = n_head
+        self._nhead = n_heads
         self._dim_feedforward = dim_feedforward
         self._n_layers = n_layers
         self._dropout = dropout
@@ -140,7 +140,7 @@ class PeptideDecoder(ModelMixin):
         # Additional model components
         layer = torch.nn.TransformerDecoderLayer(
             d_model=d_model,
-            nhead=n_head,
+            nhead=n_heads,
             dim_feedforward=dim_feedforward,
             batch_first=True,
             dropout=dropout,

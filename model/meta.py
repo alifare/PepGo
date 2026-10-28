@@ -20,16 +20,16 @@ class META:
 
         #configs
         self._configs = configs
-        self._min_mz = self._configs['Model']['Spectrum']['min_mz']
-        self._max_mz = self._configs['Model']['Spectrum']['max_mz']
+        self._min_mz = self._configs['Model']['Peak']['min_mz']
+        self._max_mz = self._configs['Model']['Peak']['max_mz']
 
-        self._min_peaks = self._configs['Model']['Spectrum']['min_peaks']
-        self._max_peaks = self._configs['Model']['Spectrum']['max_peaks']
+        self._min_peaks = self._configs['Model']['Peak']['min_peak']
+        self._max_peaks = self._configs['Model']['Peak']['max_peak']
 
-        self._min_intensity = self._configs['Model']['Spectrum']['min_intensity']
-        self._max_charge = self._configs['Model']['Spectrum']['max_charge']
+        self._min_intensity = self._configs['Model']['Peak']['min_intensity']
+        self._max_charge = self._configs['Model']['Precursor']['max_charge']
 
-        self._remove_precursor_tol = self._configs['Model']['Spectrum']['remove_precursor_tol']
+        self._remove_precursor_tol = self._configs['Model']['Precursor']['remove_precursor_tol']
         self._replace_isoleucine_and_leucine_with_X = self._configs['Model']['Peptide']['replace_isoleucine_and_leucine_with_X']
 
         self._sorted_peptides_mass_arr_cache = None

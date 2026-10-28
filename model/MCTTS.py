@@ -108,6 +108,7 @@ class Monte_Carlo_Double_Root_Tree:
         self._utils = UTILS()
         self._meta = meta
         self._configs = configs
+        self.Peptide_configs = self._configs.get('Model', {}).get('Peptide', {})
 
         #Meta infomation
         self._proton = self._meta.proton
@@ -146,7 +147,7 @@ class Monte_Carlo_Double_Root_Tree:
         self._SCALAR = 0.001
         #self._SCALAR_Transformer = math.sqrt(2.0)
         self._SCALAR_Transformer = 0.001
-        self._pep_len = self._configs['Model']['Basic']['pep_len']
+        self._pep_len = self.Peptide_configs.get('max_peptide_len', 100)
 
         #Delta reward generated in simulation step
         self.probe_bisect_search_delta = self._configs['MCTTS']['Delta']['mode']['probe_bisect_search']

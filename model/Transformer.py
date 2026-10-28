@@ -19,6 +19,19 @@ import inspect
 
 import dreams.utils.spectra as su
 
+import numbers
+def get_positive_int(configs, key, default=None):
+    raw = configs.get(key)
+    if raw is None:
+        if default is None:
+            raise KeyError(f"missing required config: {key}")
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, numbers.Integral):
+        raise TypeError(f"{key} must be a positive int, got {type(raw).__name__}: {raw!r}")
+    if raw <= 0:
+        raise ValueError(f"{key} must be positive, got {raw}")
+    return int(raw)
+
 class Transformer(pl.LightningModule):
     def __init__(self, configs=None, meta=None, pretrain_mode: bool = False, encoder=None, **kwargs: Dict):
         super().__init__()
@@ -44,11 +57,19 @@ class Transformer(pl.LightningModule):
 
         self.Transformer_configs = Model_configs.get('Transformer',{})
         self.DreaMS_configs = Model_configs.get('DreaMS', {})
-        self.my_configs = Model_configs.get('my', {})
+
+        BASE = ("Peak", "Precursor", "Peptide", "Transformer")
+        self.current_architecture_configs = {k: v for name in BASE for k, v in (Model_configs.get(name) or {}).items()}
+        self.current_architecture_configs.update({k: v for k, v in (Model_configs.get(encoder) or {}).items() if not k.startswith("_")})
+
+        self.train_batch_size = self.current_architecture_configs.get('train_batch_size')
+        self.valid_batch_size = self.current_architecture_configs.get('valid_batch_size')
+        self.test_batch_size = self.current_architecture_configs.get('test_batch_size')
 
         self.Pretrain_configs = self._configs.get('Model', {}).get('Pretrain', {})
         self.Trainer_configs = self._configs.get('Model', {}).get('Trainer', {})
-        self.Basic_configs = self._configs.get('Model', {}).get('Basic', {})
+        self.Peak_configs = self._configs.get('Model', {}).get('Peak', {})
+        self.Precursor_configs = self._configs.get('Model', {}).get('Precursor', {})
 
         MCTTS_configs = self._configs.get('MCTTS', {})
         MCTTS_Tree_configs = MCTTS_configs.get('Tree',{})
@@ -56,17 +77,16 @@ class Transformer(pl.LightningModule):
 
         self.max_peptide_len = Peptide_configs.get('max_peptide_len', 100)
         self.min_peptide_len = self.Transformer_configs.get('min_peptide_len', 6)
-        self.max_mz = self.Basic_configs.get('max_mz', 2500)
-        self.bin_size = self.Basic_configs.get('bin_size', 0.05)
+        self.max_mz = self.Peak_configs.get('max_mz', 2500)
 
         self.replace_isoleucine_and_leucine_with_X = Peptide_configs.get('replace_isoleucine_and_leucine_with_X', False)
         self.isotope_error_range = tuple(MCTTS_Tree_configs.get('isotope_error_range', (0, 1)))
 
         n_log = self.Trainer_configs.get('n_log', 10)
 
-        max_charge = self.Transformer_configs.get('max_charge', 10)
-        dim_model = self.Transformer_configs.get('dim_model', 1024)
-        n_head = self.Transformer_configs.get('n_head', 8)
+        max_charge = self.Precursor_configs.get('max_charge', 10)
+        d_model = self.Transformer_configs.get('d_model', 1024)
+        n_heads = self.Transformer_configs.get('n_heads', 8)
         dim_feedforward = self.Transformer_configs.get('dim_feedforward', 1024)
         n_layers = self.Transformer_configs.get('n_layers', 9)
         dropout = self.Transformer_configs.get('dropout',0.0)
@@ -76,23 +96,36 @@ class Transformer(pl.LightningModule):
         self.warmup_iters = None
         self.cosine_schedule_period_iters = None
 
+        #self._utils.parse_var(self.current_architecture_configs)
+        #sys.exit()
+
         # Build the model.
         self.encoder = None
         if (self._encoder_type == 'Casanovo'):
             from .Casanovo import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
+            self._utils.parse_var(self.current_architecture_configs)
+            self.encoder = SpectrumEncoder(self.current_architecture_configs)
+            '''
             self.encoder = SpectrumEncoder(
-                d_model=dim_model,
-                n_head=n_head,
+                d_model=d_model,
+                n_heads=n_heads,
                 dim_feedforward=dim_feedforward,
                 n_layers=n_layers,
                 dropout=dropout,
             )
+            '''
         elif (self._encoder_type == 'DreaMS'):
             from .DreaMS import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
             self.encoder = SpectrumEncoder(self.DreaMS_configs)
         elif (self._encoder_type == 'my'):
             from .my import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
-            self.encoder = SpectrumEncoder(configs=self.my_configs)
+            d_model = get_positive_int(self.current_architecture_configs, 'd_model', default=512)
+            dim_feedforward = get_positive_int(self.current_architecture_configs, 'dim_feedforward', default=2 * d_model)
+            echo_fourier_num_freqs = self.current_architecture_configs.get('echo_fourier_num_freqs', 64)
+            d_echo_params = get_positive_int(self.current_architecture_configs, 'd_echo_params', default=2 * echo_fourier_num_freqs)
+            self.current_architecture_configs.update({'dim_feedforward': dim_feedforward})
+            self.current_architecture_configs.update({'d_echo_params': d_echo_params})
+            self.encoder = SpectrumEncoder(configs=self.current_architecture_configs)
 
         self.tokenizer = PeptideTokenizer(
             residues=self._meta.tokens,
@@ -108,17 +141,20 @@ class Transformer(pl.LightningModule):
         #print("Attributes:", vars(self.encoder))
         #print("Methods and props:", [m for m in dir(self.encoder) if not m.startswith('_')])
 
+        '''
         self.decoder = PeptideDecoder(
             n_tokens=len(self.tokenizer),
-            d_model=dim_model,
-            n_head=n_head,
+            d_model=d_model,
+            n_heads=n_heads,
             dim_feedforward=dim_feedforward,
             n_layers=n_layers,
             dropout=dropout,
             padding_int=self.tokenizer.padding_int,
             max_charge=max_charge
         )
-
+        '''
+        self.decoder = PeptideDecoder(configs, n_tokens=len(self.tokenizer), padding_int=self.tokenizer.padding_int)
+        #sys.exit()
         ignore_index = 0
         self.celoss = torch.nn.CrossEntropyLoss(
             ignore_index=ignore_index, label_smoothing=train_label_smoothing
@@ -132,9 +168,15 @@ class Transformer(pl.LightningModule):
         self.n_log = n_log
         self._history = []
 
+        #sys.exit()
+
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
+
+    @property
+    def train_sizes(self):
+        return(self.train_batch_size, self.valid_batch_size, self.test_batch_size)
 
     def setup(self, stage: str = None):
         """
@@ -150,7 +192,7 @@ class Transformer(pl.LightningModule):
                 param.requires_grad = False
             logger.info("Pretrain mode: Encoder trainable (masked autoencoding)")
         else:
-            freeze_encoder = self.Transformer_configs.get('freeze_encoder', False)
+            freeze_encoder = False
             if freeze_encoder:
                 for param in self.encoder.parameters():
                     param.requires_grad = False
