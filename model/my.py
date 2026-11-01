@@ -20,28 +20,30 @@ from .utils import UTILS
 
 #-------------------------Classes for Spectra-------------------------
 class FourierFeatures(torch.nn.Module):
-    def __init__(self, strategy, x_min, x_max, trainable=False, funcs='both', sigma=10, num_freqs=512, fourier_power=2.0):
+    def __init__(self, strategy, x_min, x_max, trainable=False, funcs='both', sigma=10, num_freqs=256, fourier_power=1.0):
         assert strategy in {'random', 'voronov_et_al', 'lin_float_int', 'voronov_power'}
         assert funcs in {'both', 'sin', 'cos'}
         assert x_min < 1
+        assert num_freqs >= 3
 
         super().__init__()
         self.funcs = funcs
         self.strategy = strategy
         self.trainable = trainable
-        self.num_freqs = num_freqs
-        self.fourier_power = fourier_power
+        self._utils = UTILS()
 
         if self.strategy == 'random':
-            b = torch.randn(num_freqs) * sigma
+            b = torch.randn(num_freqs, dtype=torch.float64) * sigma
         elif self.strategy == 'voronov_et_al':
             b = torch.tensor(
                 [1 / (x_min * (x_max / x_min) ** (2 * i / (num_freqs - 2))) for i in range(1, num_freqs)],
+                dtype=torch.float64,
             )
         elif self.strategy == 'lin_float_int':
             b = torch.tensor(
                 [1 / (x_min * i) for i in range(2, ceil(1 / x_min), 2)] +
                 [1 / (1 * i) for i in range(2, ceil(x_max), 1)],
+                dtype=torch.float64,
             )
         elif self.strategy == 'voronov_power':
             # ============================================================================
@@ -65,31 +67,47 @@ class FourierFeatures(torch.nn.Module):
             # differences (e.g., K vs Q, 0.036 Da).
             # ============================================================================
             # 生成 0 到 N-1 的索引
-            indices = torch.arange(num_freqs, dtype=torch.float32)
+            indices = torch.arange(num_freqs, dtype=torch.float64)
+
             # 归一化到 [0, 1]，并施加 power 次方
             t = (indices / (num_freqs - 1)) ** fourier_power
+
             # 计算频率：从低到高，但偏向高频
             # 注意：这里 1/x_min 是最大频率，1/x_max 是最小频率
-            freqs = (1 / x_min) * ((x_max / x_min) ** (-t))
-            b = freqs
+            b = (1 / x_min) * ((x_max / x_min) ** (-t))
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
         b = b.unsqueeze(0)
-        #self.b = torch.nn.Parameter(b, requires_grad=self.trainable)
         if self.trainable:
+            # 频率矩阵在 fp64 下计算以保证精度，但作为可训练参数以 fp32 存储：
+            # 优化器状态（m/v）随之是 fp32，省显存/提速；
+            # forward 中会 .double() 扩回 fp64 参与计算，精度不受影响。
+            b = b.to(torch.float32)
             self.b = torch.nn.Parameter(b, requires_grad=True)
         else:
             self.register_buffer('b', b)
 
     def forward(self, x):
-        x = 2 * torch.pi * x @ self.b
+        # fp64 算相位，避免 fp32 下大数累加误差
+        #self._utils.parse_var(x,'a')
+        phase = 2.0 * torch.pi * (x.double() @ self.b.double())  # fp64
+        # 归约到 [0, 2π)
+        #self._utils.parse_var(phase,'b')
+        phase = torch.remainder(phase, 2.0 * torch.pi)  # fp64, ∈ [0, 2π)
+        # 此时数值小，cast fp32 安全（误差 ~1e-7）
+        x = phase.float()
+        #self._utils.parse_var(phase,'c')
+        #self._utils.parse_var(x,'d')
+
         if self.funcs == 'both':
             x = torch.cat((torch.cos(x), torch.sin(x)), dim=-1)
         elif self.funcs == 'cos':
             x = torch.cos(x)
         elif self.funcs == 'sin':
             x = torch.sin(x)
+
+        #self._utils.parse_var(x, 'e')
         return x
 
     def num_features(self):
@@ -166,10 +184,10 @@ class PrecursorEncoder(nn.Module):
 
         self.d_model = configs.get('d_model', 512)
         self.max_charge = configs.get('max_charge', 10)
-        self.strategy = configs.get('fourier_strategy','voronov_power')  # 和峰一致
 
-        self.precursor_mass_fourier_num_freqs = configs.get('precursor_mass_fourier_num_freqs', 256)
-        self.precursor_mass_fourier_power = configs.get('precursor_mass_fourier_power', 1.0)
+        self.strategy = configs.get('fourier_strategy','voronov_power')  # 和峰一致
+        self.precursor_mass_fourier_num_freqs = configs.get('precursor_mass_fourier_num_freqs', 128)
+        self.precursor_mass_fourier_power = configs.get('precursor_mass_fourier_power', 0.5)
         self.fourier_trainable = configs.get('fourier_trainable', False)
         self.funcs = 'both'  # 和峰一致
 
@@ -185,28 +203,67 @@ class PrecursorEncoder(nn.Module):
             trainable=self.fourier_trainable,
             funcs=self.funcs  # 和峰一致
         )
+        #print(self.precursor_mass_fourier)
+        #sys.exit()
+        # ---- mass 编码：Fourier + 归一化原始值 ----
+        self.mass_proj = torch.nn.Linear(self.precursor_mass_fourier.num_features(), self.d_model)
+        self.mass_norm = torch.nn.LayerNorm(self.d_model)
 
-        self.mass_num_features = self.precursor_mass_fourier.num_features()
+        # ---- charge 编码：Embedding（含「电荷未知」(即charge=0) 的情况）→ LN ----
+        self.charge_encoder = torch.nn.Embedding(self.max_charge + 1, self.d_model)
+        self.charge_norm = torch.nn.LayerNorm(self.d_model)
 
-        #mass 用 fourier, charge 用 embedding
-        self.mass_proj = nn.Linear(self.precursor_mass_fourier.num_features(), self.d_model)
-        self.charge_encoder = torch.nn.Embedding(self.max_charge, self.d_model)
+        # ---------- 融合 ----------
+        self.cond_fuse = torch.nn.Sequential(
+            torch.nn.Linear(2 * self.d_model, 2 * self.d_model),
+            torch.nn.GELU(),
+            torch.nn.Linear(2 * self.d_model, self.d_model),
+        )
+        torch.nn.init.zeros_(self.cond_fuse[-1].weight)
+        torch.nn.init.zeros_(self.cond_fuse[-1].bias)
 
     def num_features(self):
-        return 2
+        return 1
 
     def forward(self, precursors_mass, precursors_charge):
-        #self._utils.parse_var(precursors_mass)
-        masses = self.mass_proj(self.precursor_mass_fourier(precursors_mass[..., None]))
-        #masses = self.precursor_mass_fourier(precursors_mass[..., None])
-        #self._utils.parse_var(masses)
+        # 统一形状为 (b,)
+        #self._utils.parse_var(precursors_mass,'a')
+        #self._utils.parse_var(precursors_charge,'a')
+        precursors_mass = precursors_mass.flatten()
+        precursors_charge = precursors_charge.flatten()
+        #self._utils.parse_var(precursors_mass,'b')
+        #self._utils.parse_var(precursors_charge,'b')
 
-        #self._utils.parse_var(precursors_charge)
-        charges = self.charge_encoder(precursors_charge.int() -1)
-        #charges = precursors_charge.int() - 1
-        #self._utils.parse_var(charges)
+        # ---------- mass 编码 ----------
+        mass_clamped = precursors_mass.clamp(self.precursor_min_mass, self.precursor_max_mass)
+        #self._utils.parse_var(mass_clamped,'a')
+        #self._utils.parse_var(mass_clamped[..., None],'b')
+        mass_fourier = self.precursor_mass_fourier(mass_clamped[..., None]) # (b, 1, F)
+        #self._utils.parse_var(mass_fourier,'c')
+        #self._utils.parse_var(self.mass_proj(mass_fourier),'d')
+        #self._utils.parse_var(self.mass_norm(self.mass_proj(mass_fourier)),'e')
 
-        return masses, charges
+        masses = self.mass_norm(self.mass_proj(mass_fourier)) # (b, d)
+        #self._utils.parse_var(masses, 'f')
+
+        # ---------- charge 编码 ----------
+        charge_idx = precursors_charge.int().clamp(min=0, max=self.max_charge)
+        #self._utils.parse_var(charge_idx,'a')
+        charges = self.charge_norm(self.charge_encoder(charge_idx)) # (b, d)
+        #self._utils.parse_var(self.charge_encoder(charge_idx),'b')
+        #self._utils.parse_var(charges,'c')
+
+        # ---------- 融合 ----------
+
+
+        cond = torch.cat([masses, charges], dim=-1)  # (b, 2d)
+        cond_embed = self.cond_fuse(cond).unsqueeze(1)  # (b, 1, d)
+        #self._utils.parse_var(cond,'e')
+        #self._utils.parse_var(cond_embed,'f')
+
+        #sys.exit()
+
+        return cond_embed
 
 class PeakEncoder(nn.Module):
     def __init__(self, configs):
@@ -377,7 +434,7 @@ class PeakDecoder(torch.nn.Module):
         return self.ff_out(x)
 
 class SpectrumEncoder(nn.Module):
-    def __init__(self, configs = None):
+    def __init__(self, configs = None, pretrain_mode=False):
         super().__init__()
         if configs is None:
             raise ValueError("configs must be provided")
@@ -385,13 +442,16 @@ class SpectrumEncoder(nn.Module):
             raise ValueError("configs must be a dict")
 
         self._utils = UTILS()
+        self._pretrain_mode = pretrain_mode
         self.focal_loss_gamma = configs.get('focal_loss_gamma', 5)
 
         self.dim_feedforward = configs.get('dim_feedforward')
 
         self.precursor_encoder = PrecursorEncoder(configs)
         self.peak_encoder = PeakEncoder(configs)
-        self.peak_decoder = PeakDecoder(configs)
+        self.peak_decoder = None
+        if(self._pretrain_mode):
+            self.peak_decoder = PeakDecoder(configs)
         self.transformer_encoder = TransformerEncoder(configs)
 
         # 损失函数
@@ -408,13 +468,12 @@ class SpectrumEncoder(nn.Module):
             **kwargs: dict,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Encode the precursor
-        precursors_mass_encoded, precursors_charge_encoded = self.precursor_encoder(precursors_mass, precursors_charge)
+        precursor_cond = self.precursor_encoder(precursors_mass, precursors_charge)
         # Encode the peaks
         mz_encoded, intensity_encoded, padding_mask, echoes = self.peak_encoder(spectra)
 
         out = self.transformer_encoder(
-            precursors_mass_encoded,
-            precursors_charge_encoded,
+            precursor_cond,
             mz_encoded,
             intensity_encoded,
             padding_mask,
@@ -438,34 +497,56 @@ class TransformerEncoder(nn.Module):
         self.scnorm = configs.get('scnorm', False)
         self._gradient_checkpointing = False
 
-        self.atts = nn.ModuleList([MultiheadAttention(configs) for _ in range(self.n_layers)])
-        self.ffs = nn.ModuleList([tFeedForward(configs) for _ in range(self.n_layers)])
+        self.atts = torch.nn.ModuleList([MultiheadAttention(configs) for _ in range(self.n_layers)])
+        self.ffs = torch.nn.ModuleList([tFeedForward(configs) for _ in range(self.n_layers)])
 
         num_scales = self.n_layers * 2 + 1 if self.pre_norm else self.n_layers * 2
         if self.scnorm:
-            self.scales = nn.ModuleList([ScaleNorm(self.d_model ** 0.5) for _ in range(num_scales)])
+            self.scales = torch.nn.ModuleList([ScaleNorm(self.d_model ** 0.5) for _ in range(num_scales)])
         else:
-            self.scales = nn.ModuleList([nn.LayerNorm(self.d_model) for _ in range(num_scales)])
+            self.scales = torch.nn.ModuleList([nn.LayerNorm(self.d_model) for _ in range(num_scales)])
 
-        ref_configs = configs.copy()
-        ref_configs.update({'attn_mech': 'dot-product'})
+        # ============================================================================
+        # Per-layer AdaLN (Adaptive Layer Normalization with Zero-init)
+        #
+        # 每层独立的 Linear(d, 4d)，从全局条件 cond_embed 生成 γ₁,β₁,γ₂,β₂，
+        # 在 LayerNorm 后、Attn / FFN 前做逐特征仿射调制：
+        #     h = LN(x) * (1 + γ) + β
+        #
+        # 理论来源：
+        #   [1] Peebles & Xie, "Scalable Diffusion Models with Transformers",
+        #       ICCV 2023, arXiv:2212.09748.  (adaLN-Zero)
+        #   [2] Perez et al., "FiLM: Visual Reasoning with a General Conditioning
+        #       Layer", AAAI 2018, arXiv:1709.07871.  (Feature-wise Linear Modulation)
+        #   [3] Karras et al., "A Style-Based Generator Architecture for Generative
+        #       Adversarial Networks", CVPR 2019.  (AdaIN, 逐层注入全局条件)
+        #
+        # DiT 的 adaLN-Zero 用 2 层 MLP 从条件预测 (γ, β)，并零初始化最后一层，
+        # 使训练初期每个 block 退化为恒等映射：
+        #     W₂ = 0  →  γ = β = 0  →  h = LN(x) * 1 + 0 = LN(x)
+        # 本实现沿用这一策略，但把 `γ` 写成 `1 + γ` 而非 `γ`，
+        # 使零初始化时 `h = LN(x)` 保持不变，等价于 DiT 的恒等起点。
+        #
+        # 与 cross-attention 相比，AdaLN 的优势：
+        #   - 输出空间是 d 维逐元素调制，而非 n_heads 维凸组合（2-token cross-attn 的瓶颈）
+        #   - 计算更便宜：逐元素乘加 vs softmax + 加权
+        #   - 语义更匹配：mass/charge 是全局标量条件，不是可变数量的上下文
+        # ============================================================================
 
-        #diff = DeepDiff(configs, ref_configs, ignore_order=True)
-        #print(diff.pretty())
-
-        self.ref_atts = nn.ModuleList([
-            MultiheadAttention(ref_configs, mhatype='ref') for _ in range(self.n_layers)
+        # ---------- 每层 AdaLN：一次生成 γ1,β1,γ2,β2 ----------
+        self.ada_lns = torch.nn.ModuleList([
+            torch.nn.Linear(self.d_model, 4 * self.d_model) for _ in range(self.n_layers)
         ])
-        self.ref_gates = nn.ParameterList([
-            nn.Parameter(torch.zeros(1)) for _ in range(self.n_layers)
-        ])
+        for ada in self.ada_lns:
+            torch.nn.init.zeros_(ada.weight)
+            torch.nn.init.zeros_(ada.bias)
 
         self.peak_combiner = torch.nn.Linear(2 * self.d_model, self.d_model, bias=False)
 
     def gradient_checkpointing_enable(self):
         self._gradient_checkpointing = True
 
-    def _layer_forward(self, i, x, src_mask, echoes, ref_kv=None):
+    def _layer_forward(self, i, x, src_mask, echoes, cond_embed=None):
         pre_norm = self.pre_norm
         post_norm = not pre_norm
         att = self.atts[i]
@@ -473,55 +554,51 @@ class TransformerEncoder(nn.Module):
         att_scale = self.scales[2 * i]
         ff_scale = self.scales[2 * i + 1]
 
-        # ---- Self-Attention ----
+        # 本层的 γ/β
+        if cond_embed is not None:
+            # AdaLN: h = LN(x) * (1 + γ) + β
+            # Refs: DiT (Peebles & Xie, ICCV 2023, arXiv:2212.09748);
+            #       FiLM (Perez et al., AAAI 2018, arXiv:1709.07871);
+            #       StyleGAN AdaIN (Karras et al., CVPR 2019)
+            gamma1, beta1, gamma2, beta2 = self.ada_lns[i](cond_embed).chunk(4, dim=-1)
+        else:
+            gamma1 = beta1 = gamma2 = beta2 = None
+
+        # ---- Self-Attention with AdaLN ----
         residual = x
-        x = att_scale(x) if pre_norm else x
-        x, _ = att(q=x, k=x, v=x, mask=src_mask, echoes=echoes)
-        x = residual + F.dropout(x, p=self.dropout, training=self.training)
+        h = att_scale(x) if pre_norm else x
+        if gamma1 is not None:
+            h = h * (1 + gamma1) + beta1
+        h, _ = att(q=h, k=h, v=h, mask=src_mask, echoes=echoes)
+        x = residual + F.dropout(h, p=self.dropout, training=self.training)
         x = att_scale(x) if post_norm else x
 
-        # ---- Cross-Attention to Precursor ----
-        if ref_kv is not None:
-            ref_out, _ = self.ref_atts[i](q=x, k=ref_kv, v=ref_kv, mask=None, echoes=None)
-            ref_out = F.dropout(ref_out, p=self.dropout, training=self.training)
-            x = x + self.ref_gates[i] * ref_out
-
-        # ---- Feed-Forward ----
+        # ---- Feed-Forward with AdaLN ----
         residual = x
-        x = ff_scale(x) if pre_norm else x
-        x = ff(x)
-        x = residual + F.dropout(x, p=self.dropout, training=self.training)
+        h = ff_scale(x) if pre_norm else x
+        if gamma2 is not None:
+            h = h * (1 + gamma2) + beta2
+        h = ff(h)
+        x = residual + F.dropout(h, p=self.dropout, training=self.training)
         x = ff_scale(x) if post_norm else x
         return x
 
-    def forward(self,
-        precursors_mass_encoded,
-        precursors_charge_encoded,
-        mz_encoded,
-        intensity_encoded,
-        padding_mask,
-        echoes
-    ):
-
+    def forward(self, precursor_cond, mz_encoded, intensity_encoded, padding_mask, echoes):
         peaks_encoded = torch.cat([mz_encoded, intensity_encoded], dim=-1)
         peaks = self.peak_combiner(peaks_encoded)
 
-        ref_kv = torch.stack(
-            [precursors_mass_encoded.squeeze(1), precursors_charge_encoded.squeeze(1)],
-            dim=1
-        )  # (b, 2, d_model)
-
+        cond_embed = precursor_cond
         src_mask = padding_mask
 
         x = F.dropout(peaks, p=self.dropout, training=self.training)
         for i in range(self.n_layers):
             if self._gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
-                    self._layer_forward, i, x, src_mask, echoes, ref_kv,
+                    self._layer_forward, i, x, src_mask, echoes, cond_embed,
                     use_reentrant=False,
                 )
             else:
-                x = self._layer_forward(i, x, src_mask, echoes, ref_kv)
+                x = self._layer_forward(i, x, src_mask, echoes, cond_embed)
 
         x = self.scales[-1](x) if self.pre_norm else x
         return x
@@ -677,7 +754,9 @@ class MultiheadAttention(nn.Module):
                 att_bias = self.lin_echo(echoes).permute(0, 3, 1, 2)
             else:
                 # (bs, n, n, dists_d) -> (bs, 1, n, n) broadcastable with A
+                d_echo = echoes.shape[-1]
                 att_bias = echoes.sum(dim=-1).unsqueeze(1)
+                att_bias = att_bias / (d_echo ** 0.5)
             att_weights = att_weights + att_bias
 
         if mask is not None:
@@ -685,7 +764,6 @@ class MultiheadAttention(nn.Module):
 
         att_weights = F.softmax(att_weights, dim=-1)
         att_weights = F.dropout(att_weights, p=self.dropout, training=self.training)
-        #_att_weights = att_weights.reshape(-1, n, n)
         _att_weights = att_weights.reshape(-1, n, n_k)
 
         output = torch.bmm(_att_weights, v.reshape(bs * self.n_heads, -1, self.head_dim))
@@ -712,7 +790,6 @@ class MultiheadAttention(nn.Module):
 
     def _proj(self, x, start=0, end=None):
         weight = self.weights[start:end, :]
-        #bias = None if not self.use_transformer_bias else self.biases[start:end]
         bias = self.biases[start:end] if self.use_transformer_bias else None
         return F.linear(x, weight=weight, bias=bias)
 

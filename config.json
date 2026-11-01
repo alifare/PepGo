@@ -53,7 +53,7 @@
 			"focal_loss_gamma": 5,
 			"fourier_strategy": "voronov_power",
 			"fourier_trainable": false,
-			"hot_mz_bin_size": 0.05,
+			"hot_mz_bin_size": 0.5,
 			"n_layers": 7,
 			"peak_feedforward_hidden_dim": 512,
 			"_peak_feedforward_hidden_dim": [2048, 1536, 1024],
@@ -68,8 +68,8 @@
 			"peak_min_intensity": 1e-6,
 			"precursor_min_mass": 0.1,
 			"precursor_max_mass": 6000.0,
-			"precursor_mass_fourier_num_freqs": 256,
-			"precursor_mass_fourier_power": 1.0,
+			"precursor_mass_fourier_num_freqs": 128,
+			"precursor_mass_fourier_power": 0.5,
 			"pre_norm": true,
 			"use_transformer_bias": false,
 			"train_batch_size": 32,
@@ -135,7 +135,6 @@
 			"enable_progress_bar": true
 		},
 		"Pretrain": {
-			"num_mz_bins": 20000,
 			"mz_max": 6000.0,
 			"temperature": 0.07,
 			"projection_dim": 256,

@@ -120,12 +120,12 @@ class Transformer(pl.LightningModule):
         elif (self._encoder_type == 'my'):
             from .my import SpectrumEncoder, PeptideDecoder, PeptideTokenizer
             d_model = get_positive_int(self.current_architecture_configs, 'd_model', default=512)
-            dim_feedforward = get_positive_int(self.current_architecture_configs, 'dim_feedforward', default=2 * d_model)
+            dim_feedforward = get_positive_int(self.current_architecture_configs, 'dim_feedforward', default=4 * d_model)
             echo_fourier_num_freqs = self.current_architecture_configs.get('echo_fourier_num_freqs', 64)
             d_echo_params = get_positive_int(self.current_architecture_configs, 'd_echo_params', default=2 * echo_fourier_num_freqs)
             self.current_architecture_configs.update({'dim_feedforward': dim_feedforward})
             self.current_architecture_configs.update({'d_echo_params': d_echo_params})
-            self.encoder = SpectrumEncoder(configs=self.current_architecture_configs)
+            self.encoder = SpectrumEncoder(configs=self.current_architecture_configs, pretrain_mode=self._pretrain_mode)
 
         self.tokenizer = PeptideTokenizer(
             residues=self._meta.tokens,
@@ -263,7 +263,7 @@ class Transformer(pl.LightningModule):
 
         def supervised_forward():
             """监督学习前向传播"""
-            _, _, peptides, _ = batch
+            _, _, peptides, _, _, _, _ = batch
             spectra, precursors, tokens, charges, precursors_mass, precursors_charge, precursors_mz = self._process_batch(batch, datatype='labeled')
             memories, mem_masks, _ = self.encoder(spectra, precursors_mass, precursors_charge, precursors_mz)
             return memories, mem_masks, precursors, peptides
